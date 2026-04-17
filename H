@@ -1,0 +1,173 @@
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, AttachmentBuilder, ChannelType, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
+const fetch = require('node-fetch');
+require('dotenv').config();
+const path = require('path');
+const mongoose = require('mongoose');
+const axios = require('axios');
+
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, getVoiceConnection } = require('@discordjs/voice');
+const ffmpeg = require('ffmpeg-static');
+
+const moment = require('moment-hijri');
+const fs = require('fs');
+const { pagination } = require('@devraelfreeze/discordjs-pagination');
+
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildVoiceStates]
+});
+
+// --- إعدادات السيرفر والذاكرة ---
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Web server running on port ${PORT}`));
+
+const cooldowns = new Map();
+let azkarIntervals = new Map();
+let prayerIntervals = new Map();
+
+// --- قاعدة البيانات ---
+const azkarSchema = new mongoose.Schema({
+    guildId: String,
+    channelId: String,
+    interval: Number
+});
+const Azkar = mongoose.model('Azkar', azkarSchema);
+
+const prayerSchema = new mongoose.Schema({
+    guildId: String,
+    channelId: String,
+    interval: Number
+});
+const Prayer = mongoose.model('Prayer', prayerSchema);
+
+mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+    .then(() => console.log('✅ Connected to MongoDB'))
+    .catch(err => console.error('❌ MongoDB connection error:', err));
+
+// --- تشغيل البوت واستعادة المهام ---
+client.once('ready', async () => {
+    console.log("✅ Bot is online!");
+
+    const prayers = await Prayer.find({});
+    prayers.forEach(prayer => restartPrayerLoop(prayer.guildId));
+
+    const allAzkar = await Azkar.find();
+    allAzkar.forEach(azkar => restartAzkarLoop(azkar.guildId));
+
+    console.log("✅ All saved prayer & azkar loops have been restored.");
+});
+
+// --- الأوامر والتفاعلات ---
+client.on('interactionCreate', async interaction => {
+    if (interaction.isChatInputCommand()) {
+        const { commandName } = interaction;
+
+        // أمر الأحاديث
+        if (commandName === 'ahadeeth') {
+            const row = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId('select_hadith')
+                    .setPlaceholder('📖 اختر مصدر الحديث')
+                    .addOptions([
+                        { label: 'صحيح البخاري', value: 'bukhari' },
+                        { label: 'صحيح مسلم', value: 'muslim' },
+                        { label: 'سنن أبي داود', value: 'abu-dawud' },
+                        { label: 'سنن الترمذي', value: 'tirmidhi' },
+                        { label: 'سنن النسائي', value: 'nasai' },
+                        { label: 'سنن ابن ماجه', value: 'ibn-majah' }
+                    ])
+            );
+            await interaction.reply({ content: '📜 اختر مصدر الحديث:', components: [row] });
+        }
+
+        // أمر الأذان
+        if (commandName === 'azan') {
+            const city = interaction.options.getString('city');
+            const response = await fetch(`http://api.aladhan.com/v1/timingsByCity?city=${city}&country=EG&method=2`);
+            const data = await response.json();
+            if (data.code !== 200) return interaction.reply('❌ تعذر جلب البيانات.');
+
+            const timings = data.data.timings;
+            const embed = new EmbedBuilder()
+                .setTitle(`مواقيت الصلاة لمدينة ${city}`)
+                .addFields(
+                    { name: 'الفجر', value: timings.Fajr, inline: true },
+                    { name: 'الظهر', value: timings.Dhuhr, inline: true },
+                    { name: 'العصر', value: timings.Asr, inline: true },
+                    { name: 'المغرب', value: timings.Maghrib, inline: true },
+                    { name: 'العشاء', value: timings.Isha, inline: true }
+                ).setColor(0x0099ff);
+            await interaction.reply({ embeds: [embed] });
+        }
+
+        // أوامر الأذكار والأدعية (إدارية)
+        if (commandName === 'تحديد_الروم') {
+            if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: '❌ للأدمن فقط', ephemeral: true });
+            const channel = interaction.options.getChannel('روم');
+            await Prayer.findOneAndUpdate({ guildId: interaction.guildId }, { channelId: channel.id }, { upsert: true });
+            interaction.reply(`✅ تم تحديد روم الأدعية: ${channel}`);
+            restartPrayerLoop(interaction.guildId);
+        }
+
+        // أمر الأسئلة
+        if (commandName === 'question') {
+            const questions = JSON.parse(fs.readFileSync('./questions.json', 'utf8'));
+            const question = questions[Math.floor(Math.random() * questions.length)];
+            const embed = new EmbedBuilder().setTitle('❓ سؤال جديد').setDescription(question.question).setColor(0x00AEEF);
+            const buttons = question.choices.map(choice => new ButtonBuilder().setCustomId(`q_${choice}`).setLabel(choice).setStyle(ButtonStyle.Primary));
+            const row = new ActionRowBuilder().addComponents(buttons);
+            await interaction.reply({ embeds: [embed], components: [row] });
+        }
+    }
+
+    // التعامل مع القوائم المنسدلة
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_hadith') {
+        const book = interaction.values[0];
+        const res = await fetch(`https://api.hadith.gading.dev/books/${book}?range=1-100`);
+        const data = await res.json();
+        const hadith = data.data.hadiths[Math.floor(Math.random() * data.data.hadiths.length)];
+        const embed = new EmbedBuilder().setTitle(`📖 ${data.data.name}`).setDescription(hadith.arab).setColor(0xFFD700);
+        await interaction.reply({ embeds: [embed] });
+    }
+
+    // التعامل مع الأزرار (تصحيح خطأ الـ Edit)
+    if (interaction.isButton() && interaction.customId.startsWith('q_')) {
+        const answer = interaction.customId.replace('q_', '');
+        await interaction.update({ components: [] }); // حذف الأزرار لمنع التكرار
+        await interaction.followUp({ content: `لقد اخترت: ${answer}`, ephemeral: true });
+    }
+});
+
+// --- دوال المساعدة للوقت والحلقات ---
+function parseTime(time) {
+    const match = String(time).match(/^(\d+)([smh])$/);
+    if (!match) return 600; // افتراضي 10 دقائق
+    let val = parseInt(match[1]);
+    let unit = match[2];
+    return unit === 's' ? val : unit === 'm' ? val * 60 : val * 3600;
+}
+
+async function restartPrayerLoop(guildId) {
+    if (prayerIntervals.has(guildId)) clearInterval(prayerIntervals.get(guildId));
+    const data = await Prayer.findOne({ guildId });
+    if (!data || !data.interval) return;
+    const interval = setInterval(async () => {
+        const channel = await client.channels.fetch(data.channelId).catch(() => null);
+        if (channel) channel.send("📿 ذكر الله يريح القلوب.");
+    }, data.interval * 1000);
+    prayerIntervals.set(guildId, interval);
+}
+
+async function restartAzkarLoop(guildId) {
+    if (azkarIntervals.has(guildId)) clearInterval(azkarIntervals.get(guildId));
+    const data = await Azkar.findOne({ guildId });
+    if (!data || !data.interval) return;
+    const interval = setInterval(async () => {
+        const channel = await client.channels.fetch(data.channelId).catch(() => null);
+        if (channel) channel.send("🌟 سبحان الله وبحمده.");
+    }, data.interval * 1000);
+    azkarIntervals.set(guildId, interval);
+}
+
+client.login(process.env.DISCORD_TOKEN);
