@@ -1,0 +1,1758 @@
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, AttachmentBuilder, ChannelType, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');const fetch = require('node-fetch');require('dotenv').config();
+const path = require('path');
+const mongoose = require('mongoose');
+const axios = require('axios');
+
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType , getVoiceConnection } = require('@discordjs/voice');
+const ffmpeg = require('ffmpeg-static');
+
+const moment = require('moment-hijri');
+
+const fs = require('fs');
+
+const { pagination } = require('@devraelfreeze/discordjs-pagination');
+
+
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages ,   GatewayIntentBits.GuildVoiceStates
+]
+});
+
+const express = require('express');
+
+const app = express();
+
+
+
+
+const azkarSchema = new mongoose.Schema({
+  guildId: String,
+  channelId: String,
+  interval: Number
+});
+const Azkar = mongoose.model('Azkar', azkarSchema);
+
+
+
+
+const prayerSchema = new mongoose.Schema({
+  guildId: String,
+  channelId: String,
+  interval: Number
+});
+const Prayer = mongoose.model('Prayer', prayerSchema);
+
+
+
+
+
+
+
+client.once('ready', async () => {
+  console.log("✅ Bot is online!");
+
+ 
+  const prayers = await Prayer.find({});
+  console.log(`🔍 Found ${prayers.length} prayer settings in DB.`);
+
+  prayers.forEach(prayer => {
+      console.log(`⏳ Restoring prayer loop for Guild: ${prayer.guildId}`);
+      restartPrayerLoop(prayer.guildId);
+  });
+
+
+  const allAzkar = await Azkar.find();
+  console.log(`🔍 Found ${allAzkar.length} azkar settings in DB.`);
+
+  // ✅ 
+  for (const azkar of allAzkar) {
+    console.log(`⏳ Restoring azkar loop for Guild: ${azkar.guildId}`);
+    restartAzkarLoop(azkar.guildId);
+  }
+
+  console.log("✅ All saved prayer & azkar loops have been restored.");
+});
+
+
+
+
+
+
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log('✅ Connected to MongoDB'))
+    .catch(err => console.error('❌ MongoDB connection error:', err));
+
+
+    client.on('interactionCreate', async interaction => {
+        if (interaction.isChatInputCommand()) {
+            if (interaction.commandName === 'ahadeeth') {
+                const row = new ActionRowBuilder().addComponents(
+                    new StringSelectMenuBuilder()
+                        .setCustomId('select_hadith')
+                        .setPlaceholder('📖 اختر مصدر الحديث')
+                        .addOptions([
+                            { label: 'صحيح البخاري', value: 'bukhari' },
+                            { label: 'صحيح مسلم', value: 'muslim' },
+                            { label: 'سنن أبي داود', value: 'abu-dawud' },
+                            { label: 'سنن الترمذي', value: 'tirmidhi' },
+                            { label: 'سنن النسائي', value: 'nasai' },
+                            { label: 'سنن ابن ماجه', value: 'ibn-majah' },
+                            { label: 'موطأ الإمام مالك', value: 'malik' },
+                            { label: 'سنن الدارمي', value: 'darimi' }
+                        ])
+                );
+    
+                const imagePath = path.join(__dirname,  'Untitled66_20250330013516.webp');
+                const attachment = new AttachmentBuilder(imagePath);
+        
+                await interaction.reply({
+                    content: '📜 اختر مصدر الحديث:',
+                    files: [attachment], // Attach image
+                    components: [row]
+                });
+              
+              }
+        } else if (interaction.isStringSelectMenu()) {
+            if (interaction.customId === 'select_hadith') {
+                const selectedBook = interaction.values[0];
+    
+                try {
+                    const response = await fetch(`https://api.hadith.gading.dev/books/${selectedBook}?range=1-300`);
+                    const data = await response.json();
+                    const randomHadith = data.data.hadiths[Math.floor(Math.random() * data.data.hadiths.length)];
+    
+                    const embed = new EmbedBuilder()
+                        .setTitle(`📖 حديث من ${data.data.name}`)
+                        .setDescription(randomHadith.arab)
+                        .setFooter({ text: `رقم الحديث: ${randomHadith.number}` })
+                        .setColor(0xFFD700)
+                        
+    
+                    await interaction.reply({  embeds: [embed] });
+                } catch (error) {
+                    console.error('❌ خطأ أثناء جلب الحديث:', error);
+                    await interaction.update({ content: '❌ حدث خطأ أثناء جلب الحديث، حاول مرة أخرى لاحقًا.', components: [] });
+                }
+            }
+        }
+    });
+    
+
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isCommand()) return;
+
+    if (interaction.commandName === 'azan') {
+        const city = interaction.options.getString('city'); // 
+        if (!city) {
+            return interaction.reply({ content: 'من فضلك، أدخل اسم المدينة!' });
+        }
+
+     
+        const response = await fetch(`http://api.aladhan.com/v1/timingsByCity?city=${city}&country=EG&method=2`);
+        const data = await response.json();
+
+        if (data.code !== 200) {
+            return interaction.reply({ content: `لا يمكنني الحصول على مواعيد الصلاة لمدينة ${city}.` });
+        }
+
+        const timings = data.data.timings;
+
+        const embed = {
+            color: 0x0099ff,
+            title: `مواقيت الصلاة لمدينة ${city}`,
+            fields: [
+                { name: 'الفجر', value: timings.Fajr, inline: true },
+                { name: 'الظهر', value: timings.Dhuhr, inline: true },
+                { name: 'العصر', value: timings.Asr, inline: true },
+                { name: 'المغرب', value: timings.Maghrib, inline: true },
+                { name: 'العشاء', value: timings.Isha, inline: true },
+            ],
+            timestamp: new Date(),
+            footer: {
+                text: 'تم تزويد المعلومات بواسطة API.',
+            },
+        };
+
+      
+        await interaction.reply({ embeds: [embed] });
+    }
+});
+
+
+
+
+
+
+
+
+let azkarIntervals = new Map();  // 
+let prayerIntervals = new Map(); // 
+const cooldowns = new Map();
+
+const duas = [
+  "اللهم إني أسألك العفو والعافية في الدنيا والآخرة",
+  "اللهم أصلح لي ديني الذي هو عصمة أمري",
+  "اللهم اجعل القرآن العظيم ربيع قلبي ونور صدري",
+  "اللهم إني أعوذ بك من الهم والحزن والعجز والكسل",
+  "سبحان الله وبحمده، سبحان الله العظيم",
+  "اللهم اغفر لي ولوالدي وللمسلمين جميعًا الأحياء منهم والأموات",
+  "اللهم إنك عفو تحب العفو فاعف عني",
+  "اللهم ارزقني حسن الخاتمة واجعل قبري روضة من رياض الجنة",
+  "اللهم إني أعوذ بك من شر ما عملت ومن شر ما لم أعمل",
+  "اللهم اهدني وسددني، اللهم إني أسألك الهدى والتقى والعفاف والغنى",
+  "اللهم إني أعوذ بك من الجبن والبخل وأعوذ بك من العجز والكسل",
+  "اللهم ثبت قلبي على دينك",
+  "اللهم لا تكلني إلى نفسي طرفة عين وأصلح لي شأني كله",
+  "اللهم اجعلني لك شاكرًا، لك ذاكرًا، لك مخبتًا، لك أوّاهًا، لك منيبًا",
+  "اللهم إني أسألك الجنة وما قرّب إليها من قول أو عمل، وأعوذ بك من النار وما قرّب إليها من قول أو عمل",
+  "اللهم أعني على ذكرك وشكرك وحسن عبادتك",
+  "اللهم اجعلني من الذين يستمعون القول فيتبعون أحسنه",
+  "اللهم اجعلني من المتقين، واغفر لي يوم الدين",
+  "اللهم إني أعوذ بك من قلب لا يخشع ومن دعاء لا يُسمع ومن نفس لا تشبع",
+  "اللهم اجعلني لك كما تحب، واغفر لي ما تعلم، إنك أنت الأعز الأكرم",
+  "اللهم إني أسألك علماً نافعاً ورزقاً طيباً وعملاً متقبلاً",
+  "اللهم اجعل حظي من الدنيا رضاك والجنة",
+  "اللهم ارزقني البركة في الرزق والعمل والعمر",
+  "اللهم اغفر لي ذنبي، ووسع لي في داري، وبارك لي في رزقي",
+  "اللهم أعطني خير هذا اليوم وخير ما بعده، وأعوذ بك من شر هذا اليوم وشر ما بعده",
+  "اللهم إني أسألك رحمة من عندك تهدي بها قلبي وتجمع بها شملي وتصلح بها أمري",
+  "اللهم إني أعوذ بك من السلب بعد العطاء، ومن الحور بعد الكور، ومن الشقاء بعد النعيم",
+  "اللهم إني أعوذ بك من الكفر والفقر وأعوذ بك من عذاب القبر",
+  "اللهم ارحمني يوم لا ينفع مال ولا بنون إلا من أتى الله بقلب سليم",
+  "اللهم استرني فوق الأرض وتحت الأرض ويوم العرض عليك",
+  "اللهم اغفر لي خطيئتي وجهلي وإسرافي في أمري وما أنت أعلم به مني",
+  "اللهم اجعلني لك عبدًا طائعًا، وأدم نعمتك عليّ",
+  "اللهم اجعل لي لسان صدق في الآخرين واجعلني من ورثة جنة النعيم",
+  "اللهم اجعل عملي خالصًا لوجهك الكريم ولا تجعل فيه لأحد سواك نصيبًا",
+  "اللهم اجعل لي نورًا في قلبي، ونورًا في سمعي، ونورًا في بصري",
+  "اللهم اجعلني من عبادك الصالحين، واجعلني من المتقين الأبرار",
+  "اللهم اجعلني من المقبولين في الدنيا والآخرة",
+  "اللهم ارزقني توفيقًا في كل أموري، ويسر لي أمري كله"
+];
+
+
+function getRandomDua() {
+  return duas[Math.floor(Math.random() * duas.length)];
+}
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isCommand()) return;
+  const { commandName , member } = interaction;
+
+
+
+  if (commandName === 'تحديد_الروم') {
+    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: '❌ ليس لديك الصلاحية لاستخدام هذا الأمر.', ephemeral: true });
+    }
+      const channel = interaction.options.getChannel('روم');
+
+      if (!channel || channel.type !== ChannelType.GuildText) {
+          return interaction.reply({ content: '❌ يجب تحديد روم نصي!', ephemeral: true });
+      }
+
+      let prayer = await Prayer.findOne({ guildId: interaction.guildId });
+      if (!prayer) {
+          prayer = new Prayer({ guildId: interaction.guildId, channelId: channel.id });
+      } else {
+          prayer.channelId = channel.id;
+      }
+      await prayer.save();
+
+      await interaction.reply({ content: `✅ تم تحديد الروم لإرسال الأدعية: ${channel}` });
+      restartPrayerLoop(interaction.guildId);
+  }
+
+  
+  if (commandName === 'تحديد_الوقت') {
+    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: '❌ ليس لديك الصلاحية لاستخدام هذا الأمر.', ephemeral: true });
+    }
+    const timeInput = interaction.options.getString('الوقت');
+
+    let timeInSeconds;
+    try {
+        timeInSeconds = parseTime(timeInput);
+    } catch (error) {
+        return interaction.reply({ content: '❌ يجب كتابة الوقت بصيغة صحيحة، مثل: `10s` أو `5m` أو `1h`.', ephemeral: true });
+    }
+
+    if (timeInSeconds < 5) {
+        return interaction.reply({ content: '❌ يجب أن يكون الوقت 5 ثوانٍ أو أكثر.', ephemeral: true });
+    }
+
+    let prayer = await Prayer.findOne({ guildId: interaction.guildId });
+    if (!prayer) {
+        return interaction.reply({ content: '❌ لم يتم تحديد الروم بعد! استخدم `/تحديد_الروم` أولًا.', ephemeral: true });
+    }
+
+    prayer.interval = timeInSeconds;
+    await prayer.save();
+
+    await interaction.reply({ content: `✅ سيتم إرسال الدعاء كل ${timeInput}.` });
+    restartPrayerLoop(interaction.guildId);
+}
+
+
+  if (commandName === 'ازالة_الدعاء') {
+    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: '❌ ليس لديك الصلاحية لاستخدام هذا الأمر.', ephemeral: true });
+    }
+      const prayer = await Prayer.findOne({ guildId: interaction.guildId });
+
+      if (!prayer) {
+          return interaction.reply({ content: '❌ لا يوجد إعدادات دعاء مسجلة لهذا السيرفر!', ephemeral: true });
+      }
+
+      await Prayer.deleteOne({ guildId: interaction.guildId });
+
+      if (prayerIntervals.has(interaction.guildId)) {
+          clearInterval(prayerIntervals.get(interaction.guildId));
+          prayerIntervals.delete(interaction.guildId);
+      }
+
+      await interaction.reply({ content: '✅ تم إيقاف إرسال الأدعية لهذا السيرفر وحذف الإعدادات.' });
+  }
+});
+
+
+async function restartPrayerLoop(guildId) {
+    if (prayerIntervals.has(guildId)) {
+      clearInterval(prayerIntervals.get(guildId));
+      prayerIntervals.delete(guildId);
+    }
+  
+    const prayer = await Prayer.findOne({ guildId });
+    if (!prayer || !prayer.interval) return; 
+  
+    const interval = setInterval(async () => {
+      const prayerText = getRandomDua();
+      try {
+        const channel = await client.channels.fetch(prayer.channelId);
+        if (channel) {
+          const embed = new EmbedBuilder()
+            .setColor('#0099ff')
+            .setTitle('📿 دعاء')
+            .setDescription(prayerText)
+            .setTimestamp();
+  
+          channel.send({ embeds: [embed] });
+        }
+      } catch (error) {
+        console.error(`❌ خطأ في إرسال الدعاء إلى القناة ${prayer.channelId}:`, error);
+      }
+    }, prayer.interval * 1000);
+  
+    prayerIntervals.set(guildId, interval);
+  }
+
+
+
+
+
+
+
+////////////
+
+
+
+
+
+
+
+const azkarList = [
+  "سبحان الله وبحمده، سبحان الله العظيم",
+  "لا إله إلا الله وحده لا شريك له، له الملك وله الحمد وهو على كل شيء قدير",
+  "أستغفر الله العظيم وأتوب إليه",
+  "اللهم صل وسلم على نبينا محمد",
+  "اللهم إني أسألك العفو والعافية",
+  "لا حول ولا قوة إلا بالله العلي العظيم",
+  "اللهم اغفر لي ولوالدي وللمؤمنين يوم يقوم الحساب",
+  "اللهم اجعل القرآن ربيع قلبي ونور صدري",
+  "يا حي يا قيوم برحمتك أستغيث أصلح لي شأني كله ولا تكلني إلى نفسي طرفة عين",
+  "اللهم أنت ربي لا إله إلا أنت خلقتني وأنا عبدك وأنا على عهدك ووعدك ما استطعت",
+  "سبحان الله، والحمد لله، ولا إله إلا الله، والله أكبر",
+  "اللهم اجعلني لك ذاكرًا، لك شاكرًا، لك مطيعًا، لك محبًا",
+  "اللهم إني أسألك رضاك والجنة وأعوذ بك من سخطك والنار",
+  "اللهم أعني على ذكرك وشكرك وحسن عبادتك",
+  "اللهم أنت السلام ومنك السلام تباركت يا ذا الجلال والإكرام",
+  "اللهم إني أعوذ بك من الهم والحزن، وأعوذ بك من العجز والكسل",
+  "اللهم ارزقني التوفيق والسداد في كل أمري",
+  "اللهم إني أعوذ بك من شر نفسي ومن شر كل دابة أنت آخذ بناصيتها",
+  "اللهم اجعل لي في قلبي نورًا، وفي لساني نورًا، وفي سمعي نورًا، وفي بصري نورًا",
+  "اللهم اغفر لي ما قدمت وما أخرت وما أسررت وما أعلنت وما أنت أعلم به مني",
+  "سبحانك اللهم وبحمدك، أشهد أن لا إله إلا أنت أستغفرك وأتوب إليك",
+  "اللهم إني أعوذ بك من زوال نعمتك، وتحول عافيتك، وفجاءة نقمتك",
+  "اللهم اجعلني من المتقين، واغفر لي يوم الدين",
+  "اللهم إني أسألك الهداية والتقى والعفاف والغنى",
+  "اللهم اجعل يومي خيرًا من أمسي، وغدي خيرًا من يومي",
+  "اللهم اجعلني من الذاكرين الله كثيرًا والذاكرات",
+  "اللهم إني أسألك الصحة والعافية والبركة في الرزق والعمل",
+  "اللهم إني أعوذ بك من الكفر والفقر وأعوذ بك من عذاب القبر",
+  "اللهم اجعل عملي خالصًا لوجهك الكريم ولا تجعل فيه لأحد غيرك نصيبًا",
+  "اللهم إنك عفو تحب العفو فاعف عني",
+  "اللهم تقبل منا صالح الأعمال واجعلها خالصة لوجهك الكريم",
+  "اللهم اجعلني من عبادك الصالحين، واغفر لي ذنوبي"
+];
+
+// ✅ 
+async function getRandomAzkar() {
+  const randomIndex = Math.floor(Math.random() * azkarList.length);
+  return azkarList[randomIndex];
+}
+
+// 🔹
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isCommand()) return;
+  const { commandName , member } = interaction;
+
+
+  if (commandName === 'تحديد_روم_الأذكار') {
+    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: '❌ ليس لديك الصلاحية لاستخدام هذا الأمر.', ephemeral: true });
+    }
+    const channel = interaction.options.getChannel('روم');
+
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      return interaction.reply({ content: '❌ يجب تحديد روم نصي!', ephemeral: true });
+    }
+
+    let azkar = await Azkar.findOne({ guildId: interaction.guildId });
+    if (!azkar) {
+      azkar = new Azkar({ guildId: interaction.guildId, channelId: channel.id });
+    } else {
+      azkar.channelId = channel.id;
+    }
+    await azkar.save();
+
+    await interaction.reply({ content: `✅ تم تحديد الروم لإرسال الأذكار: ${channel}` });
+    restartAzkarLoop(interaction.guildId);
+  }
+
+  if (commandName === 'تحديد_وقت_الأذكار') {
+    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: '❌ ليس لديك الصلاحية لاستخدام هذا الأمر.', ephemeral: true });
+    }
+    const timeInput = interaction.options.getString('الوقت');
+  
+    let timeInSeconds;
+  
+    try {
+        timeInSeconds = parseTime(timeInput);
+    } catch (error) {
+        return interaction.reply({ content: '❌ يجب كتابة الوقت بصيغة صحيحة، مثل: `10s` أو `5m` أو `1h`.', ephemeral: true });
+    }
+    if (timeInSeconds < 5) {
+      return interaction.reply({ content: '❌ يجب أن يكون الوقت 5 ثوانٍ أو أكثر.', ephemeral: true });
+    }
+  
+    let azkar = await Azkar.findOne({ guildId: interaction.guildId });
+    if (!azkar) {
+      return interaction.reply({ content: '❌ لم يتم تحديد الروم بعد! استخدم `/تحديد_روم_الأذكار` أولًا.', ephemeral: true });
+    }
+  
+    azkar.interval = timeInSeconds;
+    await azkar.save();
+  
+    await interaction.reply({ content: `✅ سيتم إرسال الأذكار كل ${timeInput}.` });
+    restartAzkarLoop(interaction.guildId);
+  }
+
+  if (commandName === 'ازالة_الأذكار') {
+    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: '❌ ليس لديك الصلاحية لاستخدام هذا الأمر.', ephemeral: true });
+    }
+    const azkar = await Azkar.findOne({ guildId: interaction.guildId });
+
+    if (!azkar) {
+      return interaction.reply({ content: '❌ لا يوجد إعدادات أذكار مسجلة لهذا السيرفر!', ephemeral: true });
+    }
+
+    await Azkar.deleteOne({ guildId: interaction.guildId });
+
+    if (azkarIntervals.has(interaction.guildId)) {
+      clearInterval(azkarIntervals.get(interaction.guildId));
+      azkarIntervals.delete(interaction.guildId);
+    }
+
+    await interaction.reply({ content: '✅ تم إيقاف إرسال الأذكار لهذا السيرفر وحذف الإعدادات.' });
+  }
+});
+
+// ✅
+async function restartAzkarLoop(guildId) {
+    if (azkarIntervals.has(guildId)) {
+      clearInterval(azkarIntervals.get(guildId));
+      azkarIntervals.delete(guildId);
+    }
+  
+    const azkar = await Azkar.findOne({ guildId });
+    if (!azkar || !azkar.interval) return;
+  
+    const interval = setInterval(async () => {
+      const azkarText = await getRandomAzkar();
+      try {
+        const channel = await client.channels.fetch(azkar.channelId);
+        if (channel) {
+          const embed = new EmbedBuilder()
+            .setColor('#0099ff')
+            .setTitle('📿 ذكر اليوم')
+            .setDescription(azkarText)
+            .setTimestamp();
+  
+          channel.send({ embeds: [embed] });
+        }
+      } catch (error) {
+        console.error(`❌ خطأ في إرسال الأذكار إلى القناة ${azkar.channelId}:`, error);
+      }
+    }, azkar.interval * 1000);
+  
+    azkarIntervals.set(guildId, interval);
+  }
+
+// 🔹
+function parseTime(time) {
+  if (typeof time !== "string") {
+    time = time.toString();
+  }
+  const match = time.match(/^(\d+)([smh])$/);
+  if (!match) {
+    throw new Error("❌ يجب كتابة الوقت بصيغة صحيحة، مثل: '10s' أو '5m' أو '1h'.");
+  }
+  let value = parseInt(match[1]);
+  let unit = match[2];
+  return unit === "s" ? value : unit === "m" ? value * 60 : value * 3600;
+}
+
+
+
+
+
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'عشوائيات_اذكار') {
+      const userId = interaction.user.id;
+      const currentTime = Date.now();
+      const cooldownTime = 4000; 
+
+ 
+      if (cooldowns.has(userId)) {
+          const lastUsedTime = cooldowns.get(userId);
+          const timeLeft = cooldownTime - (currentTime - lastUsedTime);
+
+          if (timeLeft > 0) {
+              return interaction.reply({ 
+                  content: `⏳ الرجاء الانتظار ${Math.ceil(timeLeft / 1000)} ثوانٍ قبل استخدام الأمر مجددًا.`,
+                  ephemeral: true 
+              });
+          }
+      }
+
+ 
+      cooldowns.set(userId, currentTime);
+
+
+      const randomZikr = azkarList[Math.floor(Math.random() * azkarList.length)];
+
+
+      const embed = new EmbedBuilder()
+          .setColor('#0099ff')
+          .setTitle('📿 ذكر عشوائي')
+          .setDescription(`**${randomZikr}**`)
+          .setFooter({ text: `تم طلب الذكر بواسطة: ${interaction.user.username}`, iconURL: interaction.user.displayAvatarURL({ dynamic: true }) });
+
+      await interaction.reply({ embeds: [embed] });
+
+ 
+      setTimeout(() => cooldowns.delete(userId), cooldownTime);
+  }
+});
+
+
+
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  
+  if (interaction.commandName === 'أدوات_الحج') {
+    
+      const embed = new EmbedBuilder()
+          .setColor('#0099ff')
+          .setTitle('🕋 أدوات الحج')
+          .setDescription('🔽 اختر أداة من القائمة لمعرفة المزيد عنها.');
+
+
+      const row = new ActionRowBuilder()
+          .addComponents(
+              new StringSelectMenuBuilder()
+                  .setCustomId('select_tool')
+                  .setPlaceholder('🔽 اختر أداة من القائمة')
+                  .addOptions([
+                      { label: 'الإقرام', value: 'ihram', description: 'ما هو الإحرام؟' },
+                      { label: 'المشعر الإقرام', value: 'miqad', description: 'ما هو المشعر الإقرام؟' },
+                      { label: 'ميناء', value: 'mina', description: 'ما هي منطقة ميناء؟' },
+                      { label: 'عرفة', value: 'Arafat', description: 'ما هو يوم عرفة؟' },
+                      { label: 'مزدلفة', value: 'muzdalifa', description: 'ما هي مزدلفة؟' }
+                  ])
+          );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
+  }
+});
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isStringSelectMenu()) return;
+  
+  if (interaction.customId === 'select_tool') {
+      let responseText = '';
+
+      switch (interaction.values[0]) {
+          case 'ihram':
+              responseText = '🕋 **الإقرام**: هو لباس الإحرام الذي يرتديه المسلم عند بدء مناسك الحج.';
+              break;
+          case 'miqad':
+              responseText = '🕌 **المشعر الإقرام**: هو المكان الذي يقوم الحاج بالإحرام منه لتلبية نية الحج.';
+              break;
+          case 'mina':
+              responseText = '⛺ **ميناء**: منطقة في مكة حيث يبيت الحجاج أيام التشريق أثناء الحج.';
+              break;
+          case 'Arafat':
+              responseText = '🌄 **عرفة**: المكان الذي يؤدي فيه الحجاج ركن الوقوف بعرفة في اليوم التاسع من ذي الحجة.';
+              break;
+          case 'muzdalifa':
+              responseText = '🌙 **مزدلفة**: المكان الذي يبيت فيه الحجاج بعد مغادرة عرفات لجمع الحصى ورمي الجمرات.';
+              break;
+          default:
+              responseText = '❌ اختيار غير صالح.';
+              break;
+      }
+
+      await interaction.reply({
+          content: responseText,
+          
+      });
+  }
+});
+
+
+
+
+//////////
+
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  
+  if (interaction.commandName === 'مراحل_الحج') {
+
+      const embed = new EmbedBuilder()
+          .setColor('#0099ff')
+          .setTitle('🕋  مراحل الحج')
+          .setDescription('🔽 اختر أداة من القائمة لمعرفة المزيد عنها.');
+
+
+      const row = new ActionRowBuilder()
+          .addComponents(
+              new StringSelectMenuBuilder()
+                  .setCustomId('select_toool')
+                  .setPlaceholder('🔽 اختر أداة من القائمة')
+                  .addOptions([
+                      { label: 'الإحرام', value: 'ihram', description: 'ما هو الإحرام؟' },
+                      { label: 'وقوف عرفة', value: 'miqad', description: 'ما هو وقوف عرفة' },
+                      { label: 'التروية', value: 'mina', description: 'ما هي الترويةء؟' },
+                      { label: 'الحج المفرد', value: 'Arafat', description: 'ما هو الحج المفرد ؟' },
+                      { label: 'الحج المتمتع', value: 'muzdalifa', description: 'ما هو الحج المتمتع ؟' }
+                  ])
+          );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
+  }
+});
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isStringSelectMenu()) return;
+  
+  if (interaction.customId === 'select_toool') {
+      let responseText = '';
+
+      switch (interaction.values[0]) {
+          case 'ihram':
+              responseText = '🕋 **الإحرام**: الثياب الخاصة التي يرتديها الحاج أثناء أداء فريضة الحج.';
+              break;
+          case 'miqad':
+              responseText = '🕌 **وقوف عرفة**: فريضة الوقوف بعرفات يوم التروية وهي أحد أهم فرائض الحج.';
+              break;
+          case 'mina':
+              responseText = '⛺ **الروية**: فترة تجمع الحجاج في منى لمدة ثلاثة أيام، ويشمل رمي الجمرات والذبح والحلاقة والطواف.';
+              break;
+          case 'Arafat':
+              responseText = '🌄 **الحج المفرد**: فريضة الحج التي يؤديها بمفرده دون مرافقة أحد آخر.';
+              break;
+          case 'muzdalifa':
+              responseText = '🌙 **الحج المتمتع**: فريضة الحج التي يؤديها الحاج المتمتع بالصحة والقدرة المادية والبدنية.';
+              break;
+          default:
+              responseText = '❌ اختيار غير صالح.';
+              break;
+      }
+
+      await interaction.reply({
+          content: responseText,
+          
+      });
+  }
+});
+
+
+
+
+/////////
+
+client.on('interactionCreate', async interaction => {
+  if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'السنن_الرواتب') {
+
+
+          const imagePath = path.join(__dirname,  './8363657662_feed0c28b3_n.jpg');
+          const attachment = new AttachmentBuilder(imagePath);
+  await interaction.reply({content : `تم الارسال` , ephemeral : true})
+          await interaction.channel.send({
+           
+              files: [attachment] 
+             
+          });
+        
+        }
+
+
+      }
+    })
+
+
+
+
+
+
+
+
+
+
+    app.get('/stream', async (req, res) => {
+        try {
+            const audioUrl = req.query.url;
+            if (!audioUrl) {
+                return res.status(400).send('❌ Audio URL is required.');
+            }
+   
+            const response = await axios({
+                url: audioUrl,
+                method: 'GET',
+                responseType: 'stream'
+            });
+   
+         
+            console.log('Content-Length:', response.headers['content-length']);
+            response.data.pipe(res);
+        } catch (error) {
+            console.error('Error fetching audio:', error);
+            res.status(500).send('❌ Error streaming audio.');
+        }
+   });
+   
+
+    const play = require('play-dl');
+    const https = require('https');
+
+    const sheikhs = {
+        'ثبتي': 'https://server6.mp3quran.net/thubti/',
+        'السديسي': 'https://server11.mp3quran.net/sds/',
+        'عبدالباسط': 'https://server8.mp3quran.net/basit_mjwd/',
+        'ماهر المعيقلي': 'https://server6.mp3quran.net/maher/',
+        'ياسر الدوسرى': 'https://server11.mp3quran.net/yasser/'
+    };
+    
+    const surahs = {
+        'الفاتحة': '001', 'البقرة': '002', 'آل عمران': '003', 'النساء': '004',
+        'المائدة': '005', 'الأنعام': '006', 'الأعراف': '007', 'الأنفال': '008',
+        'التوبة': '009', 'يونس': '010', 'هود': '011', 'يوسف': '012',
+        'الرعد': '013', 'إبراهيم': '014', 'الحجر': '015', 'النحل': '016',
+        'الإسراء': '017', 'الكهف': '018', 'مريم': '019', 'طه': '020',
+        'الأنبياء': '021', 'الحج': '022', 'المؤمنون': '023', 'النور': '024',
+        'الفرقان': '025', 'الشعراء': '026', 'النمل': '027', 'القصص': '028',
+    };
+    
+    client.on('interactionCreate', async interaction => {
+        if (!interaction.isCommand()) return;
+        if (interaction.commandName !== 'قرآن') return;
+    
+        const sheikhName = interaction.options.getString('الشيخ');
+        const surahName = interaction.options.getString('السورة');
+    
+        if (!sheikhs[sheikhName] || !surahs[surahName]) {
+            return interaction.reply({ content: '❌ الشيخ أو السورة غير صحيحة، حاول مرة أخرى!', ephemeral: true });
+        }
+    
+        const audioUrl = `${sheikhs[sheikhName]}${surahs[surahName]}.mp3`;
+        const voiceChannel = interaction.member.voice.channel;
+        if (!voiceChannel) {
+            return interaction.reply({ content: '❌ يجب أن تكون في روم صوتي!', ephemeral: true });
+        }
+    
+        try {
+            await interaction.deferReply();
+    
+
+            const connection = joinVoiceChannel({
+                channelId: voiceChannel.id,
+                guildId: voiceChannel.guild.id,
+                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+                selfDeaf: false
+            });
+    
+ 
+            const player = createAudioPlayer();
+    
+   
+            const request = https.get(audioUrl, response => {
+                const resource = createAudioResource(response, {
+                    inputType: StreamType.Arbitrary
+                });
+    
+                player.play(resource);
+                connection.subscribe(player);
+    
+                player.on(AudioPlayerStatus.Idle, () => {
+               
+                    setTimeout(() => {
+                        const connection = getVoiceConnection(voiceChannel.guild.id);
+                        if (connection) connection.destroy();
+                    }, 5000);
+                });
+    
+                player.on('error', error => {
+                    console.error('Error playing audio:', error);
+                    interaction.followUp({ content: '❌ حدث خطأ أثناء تشغيل الصوت، حاول مرة أخرى!', ephemeral: true });
+                });
+            });
+    
+            request.on('error', err => {
+                console.error('Error streaming file:', err);
+                interaction.followUp({ content: '❌ حدث خطأ أثناء تشغيل الصوت، حاول مرة أخرى!', ephemeral: true });
+            });
+    
+            await interaction.followUp(`✅ يتم الآن تشغيل **${surahName}** بصوت **${sheikhName}**`);
+        } catch (error) {
+            console.error('Error during interaction:', error);
+            await interaction.followUp({ content: '❌ حدث خطأ أثناء تشغيل الصوت، حاول مرة أخرى!', ephemeral: true });
+        }
+    });
+    
+
+
+
+
+
+    client.on("interactionCreate", async (interaction) => {
+        if (!interaction.isChatInputCommand()) return;
+        
+        if (interaction.commandName === 'عشوائيات_ادعية') {
+            const userId = interaction.user.id;
+            const currentTime = Date.now();
+            const cooldownTime = 4000; 
+    
+
+            if (cooldowns.has(userId)) {
+                const lastUsedTime = cooldowns.get(userId);
+                const timeLeft = cooldownTime - (currentTime - lastUsedTime);
+    
+                if (timeLeft > 0) {
+                    return interaction.reply({ 
+                        content: `⏳ الرجاء الانتظار ${Math.ceil(timeLeft / 1000)} ثوانٍ قبل استخدام الأمر مجددًا.`,
+                        ephemeral: true 
+                    });
+                }
+            }
+    
+
+            cooldowns.set(userId, currentTime);
+    
+
+            const randomDua = duas[Math.floor(Math.random() * duas.length)];
+    
+
+            const embed = new EmbedBuilder()
+                .setColor('#0099ff')
+                .setTitle('📿 دعاء عشوائي')
+                .setDescription(`**${randomDua}**`)
+                .setFooter({ text: `تم طلب الدعاء بواسطة: ${interaction.user.username}`, iconURL: interaction.user.displayAvatarURL({ dynamic: true }) });
+    
+            await interaction.reply({ embeds: [embed] });
+    
+
+            setTimeout(() => cooldowns.delete(userId), cooldownTime);
+        }
+    });
+
+
+
+
+
+    
+    const stories = {
+        ahl_alkahf: [
+          `اهتمَّ القرآنُ الكريمُ بترتيب أحداثِ الأمم السَّابقةِ وتبيانها لأمَّةِ الإسلامِ الخالِدةِ، وليسَ هذا الاهتمامُ بمحلٍّ من الزِّيادةِ أو الرِّوايةِ والسّردِ العشوائيّ؛ إنَّما يَهدِفُ لتتبُّعِ القضايا ذاتِ العلاقةِ بالدَّعوةِ والمواعِظِ والإقناعِ والتّأثيرِ والعِبَر، فضلاً عن تبيانِ الحقائِقِ المُتعلِّقةِ بالتَّاريخِ الدِّيني للأممِ والرُّسُلِ وحفظِها من الدَّسائِسِ والشَّائباتِ. اشتملت آياتُ القرآنِ على ثلاثةِ أنماطٍ من القصص؛ حيثُ تمثَّلَ النَّمطُ الأوَّلُ بذكرِ الأنبياءِ وبَعثِهم ومُعجِزاتهم، ومواقِف أقوامِهم وجزاءُ من آمن معهم أو كَفر. أمَّا النَّمطُ الثَّاني فاختصَّ بذكر الحوادث الكبرى والقصص العُظمى؛ كذكر قارونَ،`,
+          `وأصحاب الكهفِ، وأصحاب الفيل. وأمَّا النَّمطُ الثَّالثُ فكانَ مداهُ مُتعلِّقاً بأحداثِ بعثِ النَّبيِّ محمد عليه الصَّلاةُ والسَّلامُ، ومُجرياتِ دعوتِه وغزواتِه؛ كذكرِ حُنينَ، وتشريعُ الأحكامِ كما في قِصّة المُجادِلة. منهجُ القرآن في القصص يقوم على موضوعيَّةِ طرحِ القصَّةِ وجَلبِها من التَّاريخِ لِتُعرَضَ بأصلها نقيَّةً من التَّشويهِ والتَّغيير، ويُسهم النَّقلُ الموضوعيُّ في كشفِ الحجاب عن أصولِ الشَّرائع، وجعلِ المُستمعِ للآيات والمُتدبِّر فيها حاضراً في تتابع الأحداث مُستحضراً حكمته وتحكيمه، مُميّزاً للحقِّ والباطلِ، ثمَّ مُصدِّقاً لنبوَّاتِ الأنبياء بما أجرى الله في قصصهم من`,
+          `حقٍّ وعبرة، ومُؤمناً بدعوةِ الرَّسولِ محمد عليه الصَّلاة والسَّلامُ لما يتَّضحُ له من متانةِ القرآن الكريمِ وإعجازِهِ، ثمَّ استحضار العبرةِ وإقامة الحجَّةِ وفهمُ التَّشريع. يبرزُ في القصَّةِ القرآنيَّةٌ العرضُ الدِينيُّ المُوجَّهُ ليُعمِلَ في الرُّوحِ شُعوراً بالمسؤوليَّةِ والانتماءِ، فيتحقَّقُ في القصَّةِ ما يتحقَّقُ بغيرها من أثر الآياتِ وروحانيَّتها وإعجازها.`,
+          `وَصَفَ القرآنُ الكريمُ أصحابَ الكهفِ بأوصافٍ مُحبَّبةٍ تَعكِسُ ما يَحمِلهُ شُخوصُ القَصَّةِ وأبطالُها من قِيَمٍ تُمثِّلُ مَطلبَ الإيمانِ بالله وحده، قال تعالى: (نَحْنُ نَقُصُّ عَلَيْكَ نَبَأَهُمْ بِالْحَقِّ إِنَّهُمْ فِتْيَةٌ آَمَنُوا بِرَبِهم وزِدْنَاهُمْ هُدًى). وفي خبرِ أصحابِ الكهفِ أنَّهم فرُّوا بدينِهم من مَلكٍ ظَهرَ في مدينَتهم فعبَد الأصنامَ وعبَّدَ قومهُ، فانصرفَ هؤلاء الفتية عنه إلى كهفٍ خارج المدينةِ فارّين بدينهم. تجتمعُ الرِّواياتُ على أنَّ الفتيةَ كانوا على دينِ عيسى ابن مريم عليه الصَّلاةُ والسَّلام، وأنَّ اسم الملك الكافر دَقيوس أو دَقَنيوس،`,
+          `واسمُ المَدينةِ التي يحكُمُها أفسوس أو يُقالُ طَرَسُوس، ومنها خرج الفتيةُ خوفاً من الملكِ على دينهم وأنفسهم، وكانَ تعدادُهم سبعةً كما رجَّحَ المفسِّرونَ استشهاداً بما ذكره القرآن الكريم، قال تعالى: (سَيَقُولُونَ ثَلَاثَةٌ رَّابِعُهُمْ كَلْبُهُمْ وَيَقُولُونَ خَمْسَةٌ سَادِسُهُمْ كَلْبُهُمْ رَجما بِالْغَيْبِ ۖ وَيَقُولُونَ سَبْعَةٌ وَثَامِنُهمْ كَلْبُهُمْ ۚ قُل رَّبِّي أَعْلَمُ بِعِدَّتهم مَا يَعْلَمُهُمْ إِلَّا قَلِيلٌ ۗ فَلَا تُمَارِ فِيهِم إِلَّا مِرَاءً ظَاهِرًا وَلَا تَسْتَفْتِ فِيهِم مِّنْهُمْ أَحَدًا)، وفي ذلك قيل إنّ نفيَ التِّعدادينِ الأول والثّاني ظهر بإتّباعهما جملة (رجماً بالغيب)؛ بمعنى`,
+          `قيل في أحوالِ الفتيةِ أنَّهم كانوا من أبناء الأكابِر أو من أبناء المُلوكِ، وأنَّهم كانوا صغار العمر، وأنَّ الملك دقنيوس كانَ طوَّافاً على مدن الرُّومِ فلا يُبقي فيها أحداً على دين عيسى ابن مريم عليه الصَّلاة والسَّلامُ إلا قتله، وكان الفتيةُ قد أنكروا ما كانَ عليهِ الملك دقنيوس وقومه من عبادةِ الأصنامِ واستخفُّوا حالهم، فذُكِروا عند دقنيوس أنَّ من أبناء حاشيتك من يعصي أمرك ويُسفِّه آلهتك، فَجمعَ دقنيوس الفتية وأمرهم باتِّباعِ آلهته والذّبح لها، ثمَّ توعَّدهم بالقتلِ بعدما رأى منهم`,
+          `ثباتاً على دينهم وعزيمةً منهم على التشبُّثِ به والدِّفاع عنه، ثمَّ رأى أن يجعلَ لهم موعداً يلتمسُ فيهِ عودَتَهم إليه وإلى آلهته، وما كان ليؤخِّرَ حسابهم إلا لاعتبارِ حداثةِ سنِّهم وجهلهم بما قد يُعمِلُ فيهم من القتل وسفك الدِّماءِ وتعليقِ أشلائهم على أبواب المدينةِ كما يَفعَل بمن على غير دينِه، وانطَلَق دقنيوس خارج المدينةِ يلتمسُ أمراً، فاجتمعَ الفتيةُ على اعتزالِ النَّاسِ والهربِ إلى كهفٍ في جبلٍ على أطراف المدينة يقال له بنجلوس، فجعلوا يعبدون اللهَ ويُشغلون سائر أوقاتهم بالدُّعاء والذِّكر،`,
+          `وجعلوا أحدهم على طعامِهم واسمه يمليخا، فكانَ إذا أراد الخروج إلى سوق المدينة وضعَ عنه ثيابهُ التي كان يُعرف بها بشرفه ونسبه ويلبس أثواباً ممزَّقةً يتخفَّى بها عن أهلِ مدينتِه، فيعود إلى أصحابه بطعامٍ ورزقٍ دون أن يشعُر به أحد.`,
+          `ند عودة الملك دقنيوس إلى المدينة طلب الفتية إلى أجلهم الذي أخَّره لهم، فذكر له النَّاس ما كان من أمرهم، فجمَعَ جنده ثم انطلق إلى الكهف فبنى عليه ليموتوا داخله، وكانَ الله قد ضرب على آذانهم، فكانَ في نومِهم فقدانٌ للسّمعِ الذي هو أشدُّ الحواسِّ تأثُّراً أثناء النَّوم. ثمَّ بعثَ الله ملكاً على دين عيسى ابن مريم عليه الصَّلاةُ والسَّلامُ فكان في عهدهِ أن أذنَ الله بفتحِ الكهفِ بيدِ راعٍ يقصِد الكهفِ ليحميَ أغنامه من المطر، فأرسَل الله أصحاب الكهفِ`,
+          `فاختلفوا في مدَّة نومِهم، ثمَّ أرسلوا يمليخا القائم على طعامهم ليشتري لهم، فكان كلّما مرَّ بمعلَمٍ أنكَرهُ، حتّى إذا وصل السُّوقَ وأظهرَ دراهمه أنكرهُ النَّاس واجتمعوا يسألون عن أمره، ثم رفعوا أمره إلى الملك فقصَّ عليهِ القصصَ، فأتبعهُ الملكُ وقومه إلى الكهفِ ليشهدوا مَبعثَ أصحابِه، فلمَّا وصلوا أسبقهم يمليخا إلى أصحابه فضرب الله عليهم فماتوا، فاستبطأه الملك فدخل ومعه قومه فوجدوهم على حالهم وعجلوا أمرهم، فأقاموا عليهم كنيسةً ومسجداً يُصلَّى فيه.`,
+          `نَزلَت سورةُ الكَهفِ تثبيتاً لرسولِ الله عليه الصَّلاةُ والسَّلام وتصديقاً لرسالته، ذلك أنّ كفَّار قريش بعثوا النَّضْر بن الحارث وعُقبةَ بن أبي مَعيَط إلى أحبار اليهود يستفتونهم في النَّبي محمد عليه الصَّلاة والسَّلام، فرجع النَّضر وعُقبةَ إلى أهليهم يحملون من اليهودِ ثلاثة أسئلةٍ؛ أولاها شأن الفتيةِ أهل الكهف، وثانيها الرَّجل الطوَّاف، وثالثها الرُّوح، فأبطأ الوحيُ على رسولِ الله خمسة أيامٍ، ثمَّ جاءه بسورة الكهفِ، وأخبار أصحاب الكهفِ، وذي القرنين، ونَزلت الآية: (وَيَسْأَلُونَكَ عَنِ الرُّوحِ).`,
+      ],
+      omar_alfarouq: [
+  
+      "📖 **قصة عمر بن الخطاب - الصفحة 1**\nأسلم عُمر بن الخطاب رضي الله عنه في السنة السادسة من البعثة، وكان عُمره سبعةً وعشرين سنة، وقد كان إسلامهُ بدايةً لمرحلةٍ جديدةٍ من مراحل الدعوة...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 2**\nوقال عبد الله بن مسعود رضي الله عنه عن إسلامه: ما زلنا أعزّة منذ أسلم عُمر، وكان السببُ في إسلامه دعوةُ النبيّ عليه الصلاةُ والسلام بأن يُعَزّ الإسلام...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 3**\nوأمّا بالنسبةِ لِهجرتهِ فقد كان الوحيد الذي هاجر علناً بعد أن أخذ سيفه وقوسه وسِهامه، ثمَّ ذهب إلى الكعبة، وطاف بها سبعاً، وصلّى ركعتين عند المقام...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 4**\nوقد هيّأَ الله تعالى لهُ أسباب الهداية، فكان ذات يوم جالساً عند الكعبة والقوم يتشاورون فيمن يقتل محمداً الذي فرّق جمعهم، فتوشّح بسيفه، وذهب...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 5**\nفلَقيهُ رَجُلٌ وأخبرهُ بإسلامِ أُختهِ وزوجِها، فغضب لهذا الأمر، ومضى إليهما وكانا يقرآن القُرآن، فلمّا دخل عليهما سألهما إن كانا قد أسلما...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 6**\nفضرب زوجها، وجلس على صدره، فجاءت تدفعه عنه، فضربها على وجهها، فأخبرته بإسلامها مع زوجها، فرقّ قلبه بعد، وأراد أن يقرأ في الصحيفة...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 7**\nفتطهّر وقرأ منها بداياتِ سورةِ طه، فنزل القُرآن في قلبه، وطلب منهم أن يدلّوه على النبيّ صلى الله عليه وسلم، فلمّا وصل سأل عن مكان النبي...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 8**\nفجاء إليه وضرب الباب، فلم يتجرأ أحدٌ من الصحابة الكرام فتح الباب له، لِما علموا من قوّته وبطشه. فقام إليه حمزة رضي الله عنه وأدخله...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 9**\nوسأله عن سبب مجيئه، فشهد أن لا إله إلا الله وأنّ محمداً رسول الله، فكبّر النبي صلى الله عليه وسلم والصحابة رضوان الله عليهم فرحاً بهذا الخبر...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 10**\nثُمّ بدأ بالدعوة بكلِّ ما أوتِيَ من قوّة، وكان حريصاً على إظهار وإشهار إسلامه، فذهب وصلّى عند الكعبة ومعه جمعٌ من المُسلمين...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 11**\nأجمعُ العُلماء على مُشاركة عُمر رضي الله عنه في جميع الغزوات والمعارك مع النبيّ عليه الصلاة والسلام، ولم يتخلّف عن أيٍّ منها...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 12**\nفقد شارك في غزوة بدر، وشاورهُ النبيّ عليه الصلاةُ والسلام في قتال المُشركين، فتكلّم وأحسن، ودعا إلى قتالهم...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 13**\nوفي صُلح الحُديبية كان أوّلَ من دَعاهُ النبيّ عليه الصلاةُ والسلام للذهاب إلى قُريش ومُشاورتهم، وقد أبدى المعارضة على الصُلح في البداية...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 14**\nوفي السنة السابعة من الهِجرة بعثهُ النبيّ عليه الصلاةُ والسلام ومعه ثلاثون رَجُلاً لمحاربة هوازن، فلمّا أتى هوازن الخبر هربوا...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 15**\nعَرَفَ عُمر بن الخطاب رضي الله عنه الفضل الكبير لأبي بكرٍ رضي الله عنه، فكان يرضى بِحُكمهِ، ولم يرضَ أن يكون خليفةً وأبو بكر رضي الله عنه موجود...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 16**\nطبّق عُمر رضي الله عنه منهج القُرآن وسُنّة النبيّ عليه الصلاةُ والسلام في تعامله مع رعيّته، فقد كان يَهتمّ بنساء المُجتمع وبناته...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 17**\nجاء أحدُ الرعية لِعُمر رضي الله عنه في عام الرمادة بِخُبزٍ مفتوتٍ بِسَمنٍ، فأكل منه، وكان معه رَجُلٌ من البادية، فسأله عن أكلهم...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 18**\nوقع في العام الثامن عشر من الهجرة طاعوناً سُمّيَ بطاعون عمواس، نسبةً إلى بلدة عمواس الواقعةِ بين القُدس والرملة...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 19**\nوكان وقوعه بعد حربٍ بين المُسلمين والروم، وكثرة القتلى، وتعفّن الجوُّ وفساده من الجُثث، وقد أراد عُمر في السنة السابعة عشر للهجرة الذهاب...",
+      "📖 **قصة عمر بن الخطاب - الصفحة 20**\nفكتب إلى أبي عُبيدة رضي الله عنه بالخروج لِينجوا قبل إصابته بالطاعون، فرفض ذلك لمخالطته للناس، وبقيَ حتى مات بالطاعون..."
+   
+      ],
+        ashab_alfiel: [
+             
+      "📖 **قصة أصحاب الفيل - الصفحة 1**\nوقعت حادثة الفيل في العام الذي وُلد فيه رسول الله صلى الله عليه وسلم، حيث ذكر الله تعالى في القرآن الكريم قصة أصحاب الفيل في قوله تعالى: (أَلَمْ تَرَ كَيْفَ فَعَلَ رَبُّكَ بِأَصْحَابِ الْفِيلِ ألمْ يَجْعَلْ كَيْدَهُمْ فِي تَضْلِيلٍ وَأَرْسَل عَليْهِمْ طَيْرًا أَبَابِيلَ تَرْمِيهِم بِحِجَارَةٍ مِّن سِجِّيلٍ فَجَعَلَهُمْ كَعَصْفٍ مَّأْكول).",  
+      
+      "📖 **قصة أصحاب الفيل - الصفحة 2**\nوأهلك الله تعالى فيها أبرهة الأشرم وفيلتهُ ومن معه من الجنود، فأرسل عليهم طيوراً ترميهم بالحجارة لمَّا أرادوا هدم الكعبة الشريفة، فقد روى قيس بن مخرمة فقال: (ولدتُ أنا ورسولُ اللَّهِ صلَّى اللَّهُ عليْهِ وسلَّمَ عامَ الفيلِ).",  
+      
+      "📖 **قصة أصحاب الفيل - الصفحة 3**\nوسبب ذلك أنّ جدّ النجاشي لمّا كان والياً على اليمن؛ واسمه أبرهة الأشرم، قام ببناء كنيسةٍ وسمَّاها القلّيس، وأراد أن يحوِّل الحجَّ إليها بدلاً من الكعبة، فجاء رجلٌ من كنانة إليها ليلاً وتغوّط فيها؛ ممّا أثار غضب أبرهة، فتوعّد أن يذهب إلى الكعبة ويدمّرها.",  
+      
+      "📖 **قصة أصحاب الفيل - الصفحة 4**\nفجهَّز جيشاً كبيراً، واصطحب معه الكثير من الفيلة، ولمّا وصل إلى مكانٍ اسمه المغمّس والذي يقع بالقرب من مكة، بعث إلى أهل مكّة أنّه لم يأتِ للقتال، وإنّما ليهدم الكعبة، وقد علم أهّل مكّة أنّهم لا يقدرون على المواجهة، لكنّهم عَلِموا أنّ الله تعالى سيحمي بيته الكريم.",  
+      
+      "📖 **قصة أصحاب الفيل - الصفحة 5**\nيُطلَق مصطلح أصحاب الفيل على الذين جاؤوا من الحبشة يريدون هدم الكعبة، بقيادة أبرهة الأشرم، ومعهم الفيلة، لكنَّ أهل مكّة فيهم عبد المطلب الذي كان يتميّز بحكمته، فأمرهم بإخلاء بيوتهم والصُّعود إلى جبال مكة، وكان عبد المطلّب قد عرض الأموال الكثيرة على أبرهة الأشرم على أن يعود دون هدم الكعبة لكنَّه رفض.",  
+      
+      "📖 **قصة أصحاب الفيل - الصفحة 6**\nفلما قدم أبرهة ولم يجد هناك من يصدّه، أصرّ على أن يدخل إلى الكعبة ويهدِمها، لكنَّ أهل مكة يعلمون أنّها بحماية الله تعالى، فلمَّا وصل جيش أبرهة أبى الفيل أن يدخل الحرم، فإن أدخلوه رفض وإن أعادوه عاد، وبينما هم على هذه الحال إذ أرسل الله تعالى طيوراً صغيرة أقبلت عليهم كالسحاب تحمِلُ في أفواهها وأقدامها حجارةً صغيرةً.",  
+      
+      "📖 **قصة أصحاب الفيل - الصفحة 7**\nأقدمت طيورٌ من ناحية البحر، فتعجَّب عبد المطلب منها وقال: واللَّه إنها لطير غريبة، ما هي بنجدية ولا تهامية، وإذ بها تقترب ومعها حجارةٌ من طين، وبدأت ترمي الحجارة عليهم، فهربوا يريدون النَّجاة، وكان لا يُصاب أحدٌ بها إلا تساقط لحمه عن عظمه وهَلَكَ.",  
+      
+      "📖 **قصة أصحاب الفيل - الصفحة 8**\nوأصابت أبرهة وبدأت أصابعه تتساقط واحداً تلو الآخر، فهلك الكثير منهم في الطريق، وما أن وصل أبرهة إلى اليمن حتى هلك ومات، وقد شبّههم الله تعالى بالعصف المأكول وهو التِّبن الذي أكلت منه البهائم، فصار أبرهة."
+   
+        ],
+        maazmzam: [
+          [
+              "📖 **قصة هاجر وإبراهيم - الصفحة 1**\nهاجر إبراهيم عليه السلام وبرفقته زوجته سارة من العراق مُتجهاً إلى فلسطين، بعد أن قابله قومه الوثنيين بالصد عن سبيل الله تعالى، والتكذيب وأرادوا حرقه بالنار.",  
+              
+              "📖 **قصة هاجر وإبراهيم - الصفحة 2**\nوبعد أن استقرّ في مدينته التي سمّيت فيما بعد بالخليل نسبةً له مدةً من الزمان، اضطر بأن يرحل إلى مصر؛ ليتزود بالطعام، فلمّا ذهب إلى مصر وكانت زوجته سارة من أجمل نساء الأرض، فأرادها الخبيث فرعون مصر.",  
+              
+              "📖 **قصة هاجر وإبراهيم - الصفحة 3**\nفدعت الله تعالى بأن يصرف كيده وظُلمه عنها، فكان كلّما يقترب منها يصرع صرعاً شديداً، فيسألها أن تدعو الله له ليذهب عنه ما هو فيه، وتكرّرت الحادثة عدّة مرّات، فعلم الخبيث أنّ سارة محفوظةً بحفظ القوي العزيز.",  
+              
+              "📖 **قصة هاجر وإبراهيم - الصفحة 4**\nفأطلقها وأعطاها جاريةً لخدمتها، وكان اسمها هاجر، فلمّا عادت سارة إلى إبراهيم عليه السلام وهبت له هاجر، وسبب ذلك أنّ زواجه بسارة استمرّ لعشرين عاماً دون أن تلد له، فأحبّت أن يكون له ولد، فدخل إبراهيم عليه السلام على هاجر فحملت.",  
+              
+              "📖 **قصة هاجر وإبراهيم - الصفحة 5**\nثمّ ما لبثت هاجر أن ولدت إسماعيل عليه السلام. وصل إبراهيم عليه السلام إلى مكّة المكرّمة، وكانت صحراء قاحلة لا ماء فيها، ولا شجر، ولا بشر، فترك إبراهيم عليه السلام زوجته هاجر وابنه إسماعيل عليه السلام، ثمّ مضى.",  
+              
+              "📖 **قصة هاجر وإبراهيم - الصفحة 6**\nفقالت له هاجر: (يا إبراهيم إلى أين تذهب وتتركنا في هذا الوادي الذي لا أنس فيه ولا شيء؟)، فلم يُجبها، فأعادت عليه السؤال، فلم يلتفت إليها، ثمّ أعادت السؤال مراراً، ولكنّه لم يلتفت إليها، فقالت: (آلله أمرك بهذا؟) فقال: نعم، فقالت: إذن لا يضيعنا.",  
+              
+              "📖 **قصة هاجر وإبراهيم - الصفحة 7**\nثمّ رجعت، وذهب إبراهيم ليكمل دعوته بأمر من الله تعالى، فتوجّه لله تعالى بالدعاء، قال الله تعالى: (رَبَّنا إِنّي أَسكَنتُ مِن ذُرِّيَّتي بِوادٍ غَيرِ ذي زَرعٍ عِندَ بَيتِكَ المُحَرَّمِ رَبَّنا لِيُقيمُوا الصَّلاةَ فَاجعَل أَفئِدَةً مِنَ النّاسِ تَهوي إِلَيهِم وَارزُقهُم مِنَ الثَّمَراتِ لَعَلَّهُم يَشكُرونَ).",  
+              
+              "📖 **قصة هاجر وإبراهيم - الصفحة 8**\nوما هي إلّا ساعات حتى نفد الماء، واشتدّ الكرب على هاجر، وبدأ إسماعيل عليه السلام يبكي بكاءً شديداً من شدّة الجوع والعطش، وهي تصعد إلى جبل الصفا تبحث عن مغيثٍ ثمّ تعود إليه كلّما سمعت صوته.",  
+              
+              "📖 **قصة زمزم - الصفحة 9**\nفبينما هم على تلك الحالة وقد بلغت هاجر الجهد، سمعت صوتاً، وجاءهم الفرج من الله تعالى بأن أرسل إليهم جبريل عليه السلام، فضرب برجله الأرض، فانفجرت منها عين ماء عظيمة سُمّيت زمزم، وجعلت هاجر تحوضه؛ أي تجعل الماء مثل الحوض.",  
+              
+              "📖 **قصة زمزم - الصفحة 10**\nفشربت هي وإسماعيل عليهما السلام حتى شبعا، وقد قال رسول الله: (يرحمُ اللهُ أم إسماعيلَ، لو كانت تركت زمزمَ أو قال: لو لم تغرف من الماءِ لكانت زمزمُ عيناً معيناً).",  
+              
+              "📖 **قصة زمزم - الصفحة 11**\nثمّ بقيت ماء زمزم على ما هي عليه، حتى ولي مكّة قبيلة جُرهم، وكان بينهم وبين قبيلة خُزاعة بينما كان عبد المطلب جدّ رسول الله صلّى الله عليه وسلّم نائماً عند الكعبة في أحد الأيام، رأى في المنام أنّه يُؤمر بحفر زمزم.",  
+              
+              "📖 **قصة زمزم - الصفحة 12**\nفأخبر قريش بذلك، فقالوا له: هل دلّك على مكانه؟ فقال: لا، فقالوا له: ارجع ونام، لو كانت رؤيا من الله فستعلم مكانه، فرجع ونام، فأتاه نفس الصوت في المنام مرّةً أخرى.",  
+              
+              "📖 **قصة زمزم - الصفحة 13**\nوقال له: (احفر زمزم إنّك إن حفرتها لن تندم، وهي تراث من أبيك الأعظم، لا تنزف أبداً ولا تذم، تسقي الحجيج الأعظم مثل نعام حافل لم يقسم، وينذر فيها ناذر لمنعم، تكون ميراثاً وعقداً محكم، ليست كبعض ما قد تعلم، وهي بين الفرث والدم).",  
+              
+              "📖 **قصة زمزم - الصفحة 14**\nفسأله عبد المطلب: أين هي؟ فقال له: (عند قرية النمل عند نقر الغراب غداً)، فلمّا أصبح عبد المطلب أخذ ابنه الوحيد الحارث ومعوله، وذهب ليبحث عن الأوصاف، فوجد قرية النمل بين وثنين من أوثان قريش، وهما: إساف، ونائلة.",  
+              
+              "📖 **قصة زمزم - الصفحة 15**\nوكان ذلك الموقع الذي تنحر فيه قريش القرابين، وبينما هو واقف هناك، إذ بغرابٍ ينقر عند المكان، فتأكّد عبد المطلب من صحة الوصف وعلم أنّه أمر من الله تعالى بحفر زمزم، فلمّا همّ بالحفر، اجتمعت عليه قريش وقالوا: لا نتركك تحفر مكان النحر.",  
+              
+              "📖 **قصة زمزم - الصفحة 16**\nولكنّ عبد المطلب كان عازماً على ذلك، وقال لابنه الحارث: (ذُد عني، فوالله لأمضين لما أُمرت به)، فلمّا علموا أنّه لن يتراجع عن ذلك تركوه، فحفر قليلاً وإذ بالماء يتدفّق، فقال: الله أكبر.",  
+              
+              "📖 **قصة زمزم - الصفحة 17**\nوعلم أنّه قد وجد المكان الصحيح، فلمّا استمرّ بالحفر وجد أسيافاً، وغزالتين من ذهب، ودروعاً كانت قبيلة جُرهم قد دفنتها قبل أن تُنفى من مكة، فسارعت قريش إلى عبد المطلب، وطالبوه بأن يجعل لهم نصيباً ممّا وجد، ولكنّه رفض ذلك.",  
+              
+              "📖 **قصة زمزم - الصفحة 18**\nوقال لهم: تعالوا إلى أمرٍ منصف لي ولكم، فقالوا: وما هو؟ فكان رأيه أن يُضرب عليها بالقداح عند هُبل، ويجعل للكعبة قدحين، وله قدحين، ولقريش قدحين، فوافقوه على ذلك.",  
+              
+              "📖 **قصة زمزم - الصفحة 19**\nواجتمعوا عند هُبل، وهو أكبر أصنامهم، ثمّ ضرب صاحب القداح، فكانت الغزالتين للكعبة، والأسياف لعبد المطلب، ولم يكن لقريش شيء، فجعل عبد المطلب الأسياف والغزالتين للكعبة، فكانت أول ذهبٍ تُكسى به الكعبة المشرفة، وجعل ماء زمزم سُقيا للحجيج."
+          ]
+          
+        ],
+        alkhamr: [
+            "📖 **تحريم الخمر - الصفحة 1**\nجاء في الحديث عن عثمان بن عفان رضي الله عنه أنه قال: (اجتنِبوا أمَّ الخبائثِ)، وقصة هذا الحديث هي أنّ هناك رجلاً متعبِّداً فقامت امرأة بإرسال جاريتها له، وطلبته للشهادة فذهب هذا الرجل مع الجارية وكانت تلك الجارية كلما دخلت من باب أغلقته، حتى وصلت لسيدتها. وكان عند تلك المرأة غلام له، وآنية خمر، فقالت له لم أطلبك للشهادة فإما أن تخلو بي، أو أن تشرب الخمر، أو أن تقتل هذا الغلام؛ وإلا قمتُ بالصراخ واتهامك، فقال لها اسقني كأساً",
+            "📖 **تحريم الخمر - الصفحة 2**\nمن الخمر، فقام بشربها، ثم طلب كأساً آخر فشربها، فما لبث حتى قتل الغلام وخلا بالمرأة. وفي ختام هذه القصة يؤمر الناس باجتناب الخمر فيقول: (فاجتنِبوا الخمرَ؛ فإنَّه واللهِ لا يجتمعُ إيمانٌ وإدمانُ الخمرِ في صدرِ رجلٍ أبدًا، وليوشِكنَّ أحدُهما يُخرِجُ صاحبَه)."
+        ],
+        mariam: [
+              
+      "📖 **قصة مريم وعيسى - الصفحة 1**\nإنّ الله عزّ وجلّ اصطفى آدم عليه السلام فخلقه بيده وعلّمه الأسماء كلّها، واصطفى من ذريته نوحاً عليه السلام فكان أول رسول للبشريّة، واصطفى من ذريّة نوح إبراهيم عليه السلام، وجعل من نسله الأنبياء، واصطفى منهم آل عمران فمنهم مريم وابنها المسيح عيسى بن مريم عليه السلام، ووالد مريم هو عمران بن ياشم بن أمون بن ميشا بن حزقيا بن أحريق بن يوثم بن عزاريا بن أمصيا بن ياوش بن أجريهو بن يازم بن يهفاشاط بن إنشا بن أبيان بن...",
+      
+      "📖 **قصة مريم وعيسى - الصفحة 2**\nبقيت مريم العذراء عابدةً زاهدةً معتزلةً أهلها في مكان من جهة الشرق، وكان المكان معزولاً عن الناس بحجاب أو حاجز كما قال الله تعالى: (وَاذكُر فِي الكِتابِ مَريَمَ إِذِ انتَبَذَت مِن أَهلِها مَكانًا شَرقِيًّافَاتَّخَذَت مِن دونِهِم حِجابًا فَأَرسَلنا إِلَيها روحَنا فَتَمَثَّلَ لَها بَشَرًا سَوِيًّا)، وبينما هي على تلك الحالة أرسل الله تعالى إليها جبريل عليه السلام فتشكّل على هيئة رجل ثمّ دخل عليها...",
+      
+      "📖 **قصة مريم وعيسى - الصفحة 3**\nتخشى من الله وتتقيه، فأجابها جبريل عليه السلام وطمأنها بأنّه مبعوث من الله عزّ وجلّ ولا يريد بها السوء ولكنّه أتى ليرزقها غلام بأمر الله، حيث قال الله تعالى: (قالَت إِنّي أَعوذُ بِالرَّحمنِ مِنكَ إِن كُنتَ تَقِيًّاقالَ إِنَّما أَنا رَسولُ رَبِّكِ لِأَهَبَ لَكِ غُلامًا زَكِيًّا)، فتعجّبت الطاهرة العفيفة العابدة الزاهدة نذر أمّها الذي تقبّله الله بقبول حَسن...",
+      
+      "📖 **قصة مريم وعيسى - الصفحة 4**\nآية للنّاس على قدرة الله عزّ وجلّ، كما قال الله تعالى في سورة مريم: ( قالَت أَنّى يَكونُ لي غُلامٌ وَلَم يَمسَسني بَشَرٌ وَلَم أَكُ بَغِيًّاقالَ كَذلِكِ قالَ رَبُّكِ هُوَ عَلَيَّ هَيِّنٌ وَلِنجعلهُ آيَةً لِلنّاسِ وَرَحمَةً مِنّا وَكانَ أَمرًا مَقضِيًّا)، ثمّ نفخ جبريل عليه السلام في فمها، وقيل في جيب درعها، فوصلت النفخة إلى بطنها فحملته...",
+      
+      "📖 **قصة مريم وعيسى - الصفحة 5**\nحبّ الله والإيمان به والخوف من اتهامها في دينها وطهارتها في وجدان مريم عليها السلام، فتمنّت الموت قبل الولادة، ثمّ بعث الله عزّ وجلّ بمعجزة تُخلّد ذكرها إلى يوم القيامة، فتكلّم عيسى عليه السلام مع أمه بأن لا تحزن حيث جعله الله عظيماً من عظماء الدنيا، وقال لها بأن تهزّ جذع النخلة لينزل عليها رطباً لتأكل منها...",
+      
+      "📖 **قصة مريم وعيسى - الصفحة 6**\nكانت أم مريم وهي حنة ابنة فاقوذ بن قتيل عاقراً فرأت ذات يومٍ طائراً يطعم فراخه، فتذكّرت الولد ورغبت نفسها به، فسألت الله عزّ وجلّ أن يهبها الولد، فحملت حنة ثمّ ما لبث عمران أن توفّي ونذرت ما في بطنها محرّراً لله، أي متفرّغاً لعبادة الله وخدمة الكنيسة...",
+      
+      "📖 **قصة مريم وعيسى - الصفحة 7**\nثمّ دعت الله عزّ وجلّ أن يحفظها ويحفظ ذريتها من الشيطان الرجيم، فاستجاب الله لها، وحفظ مريم وابنها عيسى عليهما السلام من الشيطان الرجيم، كما قال الله تعالى في سورة آل عمران: (إِذْ قَالَتِ امْرَأَتُ عِمْرَانَ رَبِّ إِنِّي نَذَرْتُ لَكَ مَا فِي بَطْنِي مُحَرَّرًا فَتَقَبَّلْ مِنِّي إِنَّكَ أنت السَّمِيعُ الْعَلِيمُفَلَمَّا وَضَعَتْهَا قَالَتْ رب إِنِّي وَضَعْتُهَا أُنثَىٰ وَاللَّهُ أَعْلم بِمَا وَضَعَتْ وَلَيْسَ الذَّكَرُ كَالْأُنثَىٰ وَإِنّي سَمَّيْتُهَا مَرْيَمَ وَإِنِّي أُعِيذُها بِكَ وَذرّيَّتَهَا مِنَ الشَّيْطَانِ الرَّجِيم)، ثمّ حملتها أمّها إلى الرهبان للوفاء بنذرها...",
+      
+      "📖 **قصة مريم وعيسى - الصفحة 8**\nوتكون مريم خادمة للكنيسة، فاختلفوا فيما بينهم على رعايتها وقالوا بأنّها ابنة إمامنا عمران، ثمّ اتفقوا على القُرعة فيما بينهم فألقوا أقلامهم التي كانوا يكتبون بها التوراة في النهر، فتمّت القرعة إلى زكريا بأمر الله، فنشأت مريم عليها السلام في محراب زكريا، وكان زكريا إذا دخل المحراب وجد عندها فاكهة في غير موسمها.",
+      
+      "📖 **قصة مريم وعيسى - الصفحة 9**\nالصّديق على وزن فعيل وهي صيغة مبالغة من الصادق، أو كثير الصدق، والصّديقون هم أتباع الرسل الذين اتّبعوهم ولم يغيّروا ذلك حتى لحقوا بهم، والصديقية مرتبة عظيمة عند الله عزّ وجلّ وهي المرتبة التي تأتي بعد مرتبة النبوة مباشرةً، ومن الذين أنعم الله عليهم واصطفاهم لهذه المنزلة مريم بنت عمران، حيث قال الله تعالى: (مَّا الْمَسِيحُ ابْنُ مَرْيَمَ إِلَّا رَسُولٌ قَدْ خَلَتْ مِن قَبْلِهِ الرُّسُلُ وَأُمُهُ صِدِّيقَةٌ كَانَا يَأْكُلَانِ الطَّعَامَ انظُرْ كَيْفَ نُبَيِّنُ لَهُمُ الْآيَاتِ ثُمَّ انظُرْ أَنَّى يُؤْفَكُونَ)، ولا..."
+    
+        ],
+        qawm_lut: [
+          "📖 **عذاب قوم لوط - الصفحة 1**\nنزل جبريل عليه السلام إلى قوم لوط ليعذّبهم، فقام بضرب وجوههم بجناحه ضربةً طُمست فيها أعينهم، واحتمل جبريل عليه السلام مدائنهم حتى سمع أهل السماء الدنيا نَبْح كِلابهم، ثم قلبها عليهم، وأمطر عليهم حجارةً من سجيل، قال الله تعالى واصفاً ذلك: {فَلَمَّا جَاءَ أَمْرُنَا جَعَلْنَا عَالِيَهَا سَافِلَهَا وَأَمْطَرْنَا عَلَيْهَا حِجَارَةً مِنْ سِجِّيلٍ منْضُودٍ}، والسجيل هو الطين، إلّا أنّ لوطًا قد نجا مع أهله إلّا امرأته كانت من الهالكين.",
+  
+          "📖 **عذاب قوم لوط - الصفحة 2**\nكما عُذّبوا بالصيحة، لقوله تعالى: {فَأَخَذَتْهُمُ الصَّيْحَةُ مُشْرِقِينَ}، والمراد بالصَّيحة: العذاب الذي كان قومُ لوطٍ يفعلون فواحش لم يسبقهم بها أحد، فقد كانوا يقطعون الطريق على التُّجار، وذهب الحياء منهم ولم يَعُد إليهم قطٌّ، حيث ارتكبوا أشنع الجرائم وأفظعها، وخاصة اللّواط؛ وهو أن يأتِ الرجلُ الرجلَ، فلا يقدم على هذا الذنب إلاّ من عَميت بصيرته واسودّت سريرته.",
+      
+          "📖 **عذاب قوم لوط - الصفحة 3**\nوسبب تسميتها بهذا الاسم نسبةً إلى قوم لوط، قال تعالى: {أَتَأْتُونَ الذُّكْرَانَ مِنَ الْعَالَمِينَ وَتَذَرُونَ مَا خَلَقَ لَكُمْ رَبُّكم مِنْ أَزْوَاجِكُمْ بَلْ أَنْتُمْ قَوْمٌ عَادُون}. وقد وعظهم نبي الله لوط عليه السلام، فلم يزدهم ذلك إلّا نُفورًا، وقاموا بتهديده عليه السلام بالرّجم والطّرد، إلى أن جاءت الملائكةُ لوطًا بصورة غِلمان حِسان الوجوه، فأحسَّ بضعفِ قدرته على حماية ضيوفه من فساد قومه.",
+      
+          "📖 **عذاب قوم لوط - الصفحة 4**\nفما لَبِث أن جاء قوم لوط لمعرفتهم بأمر الغلمان، فحاول لوط عليه السلام رَدْعَهم، إلّا أنَّهم أجمعوا على فعل الخبائث. فأحسَّ لوطٌ بضيقٍ شديد، فاستحكم الأمر واشتدَّ، فكشف الرّسل عن حقيقة أمرهم بأنّهم ملائكة جاءوا لتعذيب القوم على ما أقدموا من أفعال، فأمروا لوطًا بالنّجاة مع أهله إلّا امرأته، والمشي ليلًا دون الالتفات خلفهم.",
+      
+          "📖 **عذاب قوم لوط - الصفحة 5**\nهو لوط بن هاران بن تارخ، ابن أخي إبراهيم الخليل عليه السلام، وقد آمن به، وهاجر معه إلى الشام بعد نجاة الخليل من النار، ثمَّ نزل إبراهيم عليه السلام إلى فلسطين، ونزل لوط عليه السلام إلى الأردن تحديدًا إلى سدوم في شرقي الأردن.",
+      
+          "📖 **عذاب قوم لوط - الصفحة 6**\nخلاصة المقال: أنزل الله تعالى بقوم لوط أشدّ العذاب، وذلك لأنهم ابتدعوا فواحش ومنكرات كبيرة لم يأتِ بها أحدٌ من قبلهم، فحُملت مدائنهم وقُلبت عليهم، وأُمطر عليهم حجارة من سجيل، وعُذّبوا بالصيحة، وقد كان نبيّهم لوط عليه السلام من الصابرين."          
+        ],
+        qawm_ad: [
+     
+          "📖 **عذاب قوم عاد - الصفحة 1**\nذكر الله تعالى في كتابه العزيز كيف أهلك قوم عاد قوم نبيِّ الله هود عليه السلام، فقال تعالى: {وَفِي عَادٍ إِذْ أَرْسَلْنَا عَلَيْهِمُ الرِّيحَ الْعَقِيمَ * مَا تَذَرُ مِنْ شَيْءٍ أَتَتْ عَلَيْهِ إِلَّا جَعَلَتْهُ كَالرَّمِيمِ}، إذ يتَّضح من الآيات أنَّ قوم عاد كذّبوا برسولهم، وعاندوا واستكبروا كما الأقوام السَّابقة، فكان حقّاً على الله أن يهلكهم.",
+  
+          "📖 **عذاب قوم عاد - الصفحة 2**\nوقد ابتدأ غضب الله عليهم بعد ذلك، إذ حرمهم من الأمطار والماء مدَّة ثلاث سنواتٍ، فتضرَّروا من ذلك، فقرَّروا إرسال جماعةٍ منهم ليصلُّوا ويستسقوا ربَّهم في مكَّة المكرَّمة، حيث بيت الله الحرام، وقد أرسل الله تعالى عليهم بعد ذلك السُّحُب التي ظنّوا أنَّها تحمل الخير لهم.",
+      
+          "📖 **عذاب قوم عاد - الصفحة 3**\nقال الله تعالى: {فَلَمَّا رَأَوْهُ عَارِضًا مُسْتَقْبِلَ أَوْدِيَتِهِمْ قَالُوا هَذَا عَارِضٌ مُمْطِرُنَا بَلْ هُوَ مَا اسْتَعْجَلْتُمْ بِهِ رِيحٌ فِيهَا عَذَابٌ أَلِيمٌ * تُدَمِّرُ كُلَّ شَيْءٍ بِأَمْرِ رَبِّهَا فَأَصْبَحُوا لَا يُرَى إِلَّا مَسَاكِنُهُمْ كَذَلِكَ نَجْزِي الْقَوْمَ الْمُجْرِمِينَ}، فأرسل الله تعالى عليهم ريحاً شديدةً، اقتلعت كلَّ شيءٍ من شدَّتها وقوَّتها، وقد وصفها الله تعالى بالريح العقيم، التي تقضي على كلِّ شيءٍ.",
+      
+          "📖 **عذاب قوم عاد - الصفحة 4**\nكما وصفها أيضاً بالريح الصرصر: أي الريح شديدة البرودة. وممَّا زاد في عذابهم أنَّ هذه الريح استمرت مدَّة ليست بالقليلة، فقال الله تعالى: {سَخَّرَهَا عَلَيْهِمْ سَبْعَ لَيَالٍ وَثَمَانِيَةَ أَيَّامٍ حُسُومًا}، فظلَّت مدة سبع ليالٍ وثمانية أيامٍ متواصلاتٍ دون انقطاع، فكانت الريح تقتلع الواحد منهم وتنزعه من مكانه، حتَّى شبَّههم الله تعالى كأنَّهم جذوع النخل القديمة الملقاة على الأرض.",
+      
+          "📖 **عذاب قوم عاد - الصفحة 5**\nقال الله تعالى: {تَنزِعُ النَّاسَ كَأَنَّهُمْ أَعْجَازُ نَخْلٍ مُنقَعِرٍ}، فكانت الريح تفصل رؤوسهم عن أجسادهم وتلقيهم جثثاً على الأرض، بعد أن كانوا من أقوى الأمم في زمانهم، فلم تغنِ عنهم قوتهم شيئاً أمام عذاب الله.",
+      
+          "📖 **عذاب قوم عاد - الصفحة 6**\nإنّ الله تعالى عادلٌ لا يهلك قوماً إلَّا بعد تماديهم في الكفر والطّغيان، وقد أهلك قوم عاد لأسبابٍ عدّة استحقت نزول غضب الله عليهم، وهي كما يأتي:\n- كفرهم بالله تعالى وعدم إيمانهم به.\n- إنكارهم وجحودهم آيات الله ومعجزاته.\n- تكذيبهم النبيِّ هود الذي أرسل إليهم، وعدم طاعتهم أوامره.\n- اتباعهم أوامر طغاتهم وجبابرتهم.\n- اغترارهم بالنعم الكثيرة التي أغدقها الله تعالى عليهم من قوَّة الجسم، والغلبة وكثرة المال.\n- إفسادهم في البلاد، وتجاوز طغيانهم وظلمهم على العباد.",
+      
+          "📖 **عذاب قوم عاد - الصفحة 7**\nمن تمام عدل الله تعالى ورحمته أيضاً أنَّه لم ينزل العذاب بقوم عاد جميعهم، فهناك طائفةٌ منهم آمنوا بالنبيِّ هود عليه السلام واتبعوا أوامره، وأقرُّوا بوحدانيَّة الله تعالى، وتركوا عبادة الأوثان، فنجَّاهم الله تعالى مع نبيهم هود، ولم يشملهم بعذابه.",
+      
+          "📖 **عذاب قوم عاد - الصفحة 8**\nقال تعالى: {وَلَمَّا جَاءَ أَمْرُنَا نَجَّيْنَا هُودًا وَالَّذِينَ آمَنُوا مَعَهُ بِرَحْمَةٍ مِّنَّا وَنَجَّيْنَاهُم مِّنْ عَذَابٍ غَلِيظٍ}، وهذا من رحمة الله تعالى بعباده المؤمنين، حيث كتب لهم النجاة من العذاب الذي أصاب قومهم."
+          
+        ]
+    };
+
+
+  client.on('interactionCreate', async interaction => {
+      if (interaction.isCommand() && interaction.commandName === 'قصة') {
+          const row = new ActionRowBuilder().addComponents(
+              new StringSelectMenuBuilder()
+                  .setCustomId('select_story')
+                  .setPlaceholder('📖 اختر قصة لقراءتها')
+                  .addOptions([
+                      { label: 'أهل الكهف', value: 'ahl_alkahf' },
+                      { label: 'عمر بن الخطاب', value: 'omar_alfarouq' },
+                      { label: 'أصحاب الفيل', value: 'ashab_alfiel' },
+                      { label: 'ماء زمزم', value: 'maazmzam' },
+                      { label: 'الخمر', value: 'alkhamr' },
+                      { label: 'مريم العذراء', value: 'mariam' },
+                      { label: 'عذاب قوم لوط', value: 'qawm_lut' },
+                      { label: 'هلاك قوم عاد', value: 'qawm_ad' }
+                  ])
+          );
+  
+          const embed = new EmbedBuilder()
+              .setTitle('📚 قائمة القصص')
+              .setDescription('اختر القصة التي ترغب في قراءتها من القائمة أدناه.')
+              .setImage('https://media.discordapp.net/attachments/1205345337833816104/1355578849575829504/Untitled65_20250329182507.png?ex=67e970af&is=67e81f2f&hm=5959691eb0cb92238fdfbd2521dd0b0e2566802e0d6fc0c40cfbc1c3d57fb54b&=&format=webp&quality=lossless&width=1318&height=316'); 
+  
+          await interaction.reply({ embeds: [embed], components: [row] });
+      }
+  
+      if (interaction.isStringSelectMenu() && interaction.customId === 'select_story') {
+          const selectedStory = interaction.values[0];
+  
+          if (!stories[selectedStory]) {
+              return interaction.reply({ content: "❌ هذه القصة غير متاحة.", ephemeral: true });
+          }
+  
+          const pages = stories[selectedStory].map((content, index) => 
+              new EmbedBuilder()
+                  .setTitle(`📖 ${interaction.component.options.find(opt => opt.value === selectedStory).label}`)
+                  .setDescription(content)
+                  .setColor('#ffcc00')
+                  .setFooter({ text: `الصفحة ${index + 1} من ${stories[selectedStory].length}` })
+          );
+  
+          await interaction.deferReply();
+  
+          if (!interaction.user) {
+              return interaction.followUp({ content: "❌ حدث خطأ: لا يمكن العثور على المستخدم.", ephemeral: true });
+          }
+  
+          await pagination({
+              interaction,
+              embeds: pages,
+              author: interaction.user,
+              ephemeral: false
+          });
+      }
+  });
+
+
+
+
+
+function getRandomQuestion(category = null) {
+  const questions = JSON.parse(fs.readFileSync('./questions.json', 'utf8'));
+
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+
+  const filteredQuestions = category ? questions.filter(q => q.category === category) : questions;
+
+  if (filteredQuestions.length === 0) return null;
+
+  return filteredQuestions[Math.floor(Math.random() * filteredQuestions.length)];
+}
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand() && !interaction.isButton()) return;
+
+
+  if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'quran_page') {
+          let page = interaction.options.getInteger('page') || 1;
+          await sendQuranPage(interaction, page);
+          return;
+      }
+
+      if (interaction.commandName === 'تحويل_للهجرى') {
+          const year = interaction.options.getInteger('السنة');
+          const month = interaction.options.getInteger('الشهر');
+          const day = interaction.options.getInteger('اليوم');
+
+          if (month < 1 || month > 12 || day < 1 || day > 31) {
+              return interaction.reply({ content: '❌ يرجى إدخال تاريخ صالح!', ephemeral: true });
+          }
+
+          const gregorianDate = moment(`${year}-${month}-${day}`, 'YYYY-MM-DD');
+          const hijriDate = gregorianDate.format('iYYYY/iM/iD');
+
+          const embed = new EmbedBuilder()
+              .setTitle('📆 تحويل التاريخ إلى الهجري')
+              .setColor(0x00AEEF)
+              .addFields(
+                  { name: '📅 التاريخ الميلادي', value: `${year}-${month}-${day}`, inline: true },
+                  { name: '🕌 التاريخ الهجري', value: hijriDate, inline: true }
+              )
+              .setFooter({ text: 'التاريخ محول باستخدام مكتبة moment-hijri' });
+
+          await interaction.reply({ embeds: [embed] });
+          return;
+      }
+
+     
+
+      if (interaction.commandName === 'question') {
+          const category = interaction.options.getString('category');
+          const question = getRandomQuestion(category);
+
+          if (!question) {
+              return interaction.reply({ content: '❌ لا توجد أسئلة متاحة في هذه الفئة.', ephemeral: true });
+          }
+
+          const embed = new EmbedBuilder()
+          .setTitle('❓ سؤال جديد')
+          .setDescription(question.question)
+          .setColor(0x00AEEF)
+          .setFooter({ text: 'اضغط على أحد الأزرار للإجابة' })
+          .addFields(
+              question.choices.map((choice, index) => ({
+                  name: `الاختيار ${index + 1}:`,
+                  value: choice,
+                  inline: true
+              }))
+          );
+          const buttons = question.choices.map(choice =>
+              new ButtonBuilder()
+                  .setCustomId(`question_${choice}`)
+                  .setLabel(choice)
+                  .setStyle(ButtonStyle.Primary)
+          );
+
+          const row = new ActionRowBuilder().addComponents(buttons);
+
+          await interaction.reply({ embeds: [embed], components: [row] });
+          return;
+      }
+  }
+
+  
+  if (interaction.isButton()) {
+      const [prefix, actionOrChoice, pageOrChoice] = interaction.customId.split('_');
+
+      if (prefix === 'quran') {
+          let page = parseInt(pageOrChoice);
+
+          if (actionOrChoice === 'next') page++;
+          if (actionOrChoice === 'prev') page--;
+
+          if (page < 1) page = 1;
+          if (page > 604) page = 604;
+
+          await sendQuranPage(interaction, page, true);
+          return;
+      }
+
+      if (prefix === 'question') {
+        const answer = actionOrChoice;
+        const questions = JSON.parse(fs.readFileSync('./questions.json', 'utf8'));
+        const question = questions.find(q => q.choices.includes(answer));
+    
+        if (!question) {
+            console.error('Question not found:', answer);
+            return interaction.reply({ content: '❌ حدث خطأ: تعذر العثور على السؤال.', ephemeral: true });
+        }
+    
+        const correctAnswer = question.correct_answer;
+        const response = answer === correctAnswer ? '✅ **إجابة صحيحة!**' : '❌ **إجابة خاطئة!**';
+    
+
+        const updatedRow = new ActionRowBuilder().addComponents(
+            question.choices.map(choice =>
+                new ButtonBuilder()
+                    .setCustomId(`question_${choice}`)
+                    .setLabel(choice)
+                    .setStyle(ButtonStyle.Primary)
+                    .setDisabled(true) 
+            )
+        );
+    
+        try {
+           
+            await interaction.message.edit({
+                components: [updatedRow]
+            });
+    
+          
+            await interaction.reply({ content: response });
+        } catch (error) {
+            console.error('Failed to update interaction:', error);
+            await interaction.reply({ content: '❌ حدث خطأ أثناء معالجة الإجابة!', ephemeral: true }); 
+        }
+    }
+    
+  }
+});
+
+async function sendQuranPage(interaction, page, isUpdate = false) {
+  const imageUrl = `https://cdn.qurango.net/Sura2/files/mobile/${page}.jpg`;
+
+  const embed = new EmbedBuilder()
+      .setTitle(`📖 صفحة ${page} من القرآن الكريم`)
+      .setImage(imageUrl)
+      .setColor(0x00FF00)
+      .setFooter({ text: `استخدم الأزرار للتنقل بين الصفحات.` });
+
+  const row = new ActionRowBuilder()
+      .addComponents(
+          new ButtonBuilder()
+              .setCustomId(`quran_prev_${page}`)
+              .setLabel('⬅ الصفحة السابقة')
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(page === 1),
+          new ButtonBuilder()
+              .setCustomId(`quran_next_${page}`)
+              .setLabel('➡ الصفحة التالية')
+              .setStyle(ButtonStyle.Primary)
+              .setDisabled(page === 604)
+      );
+
+  if (isUpdate) {
+      await interaction.update({ embeds: [embed], components: [row] });
+  } else {
+      await interaction.reply({ embeds: [embed], components: [row] });
+  }
+}
+
+
+
+
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isCommand()) return;
+
+  if (interaction.commandName === 'رمضان') {
+
+    const imagePath = path.join(__dirname,  './image (1).webp');
+          const attachment = new AttachmentBuilder(imagePath);
+  await interaction.reply({content : `تم الارسال` , ephemeral : true})
+          await interaction.channel.send({
+           
+              files: [attachment] 
+             
+          });
+        
+    
+  }
+});
+
+
+
+
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  
+  if (interaction.commandName === 'ادوات_العمرة') {
+
+      const embed = new EmbedBuilder()
+          .setColor('#0099ff')
+          .setTitle('ادوات العمرة ')
+          .setDescription('🔽 اختر أداة من القائمة لمعرفة المزيد عنها.');
+
+ 
+      const row = new ActionRowBuilder()
+          .addComponents(
+              new StringSelectMenuBuilder()
+                  .setCustomId('select_tooool')
+                  .setPlaceholder('🔽 اختر أداة من القائمة')
+                  .addOptions([
+                      { label: 'الإحرام', value: 'ihram', description: 'ما هو الإحرام؟' },
+                      { label: 'المسجد الحرام', value: 'miqad', description: 'ما هو المسجد الحرام' },
+                      { label: 'الطواف', value: 'mina', description: 'ما هو الطواف ؟' },
+                      { label: 'السعى', value: 'Arafat', description: 'ما هو السعى ؟' },
+                    
+                  ])
+          );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
+  }
+});
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isStringSelectMenu()) return;
+  
+  if (interaction.customId === 'select_tooool') {
+      let responseText = '';
+
+      switch (interaction.values[0]) {
+          case 'ihram':
+              responseText = '🕋 **الإحرام**: الثياب الخاصة التي يرتديها الحاج أثناء أداء فريضة الحج.';
+              break;
+          case 'miqad':
+              responseText = '🕌 **المسجد الحرام**: هو المسجد الذي تتوسطه الكعبة المشرفة قبلة المسلمين، وهو أقدس بقعة على وجه الأرض.';
+              break;
+          case 'mina':
+              responseText = '⛺ **الطواف**: هو عبارة عن سبعة أشواط يقوم به المعتمر حول الكعبة، يبدأ كل شوط من أمام الحجر الأسود وينتهي به.';
+              break;
+          case 'Arafat':
+              responseText = '🌄 **السعى**: السعي يبدأ من الصفا، ويختم من المروة، والسعي شوط واحد من الصفاء للمروة هذا واحد، ومن المروة إلى الصفا شوط ثاني، وهكذا، سبعة أشواط.';
+              break;
+          
+          default:
+              responseText = '❌ اختيار غير صالح.';
+              break;
+      }
+
+      await interaction.reply({
+          content: responseText,
+          
+      });
+  }
+});
+
+
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'مغادرة') {
+      const voiceChannel = interaction.member.voice.channel;
+
+      if (!voiceChannel) {
+          return interaction.reply({ content: '❌ يجب أن تكون في قناة صوتية حتى يتمكن البوت من المغادرة.', ephemeral: true });
+      }
+
+      const connection = getVoiceConnection(interaction.guild.id);
+      if (!connection) {
+          return interaction.reply({ content: '❌ البوت ليس في أي قناة صوتية حاليًا.', ephemeral: true });
+      }
+
+      connection.destroy();
+      return interaction.reply('✅ تم مغادرة القناة الصوتية بنجاح.');
+  }
+});
+
+
+
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  
+  if (interaction.commandName === 'مراحل_العمرة') {
+      // إعداد الإمبيد
+      const embed = new EmbedBuilder()
+          .setColor('#0099ff')
+          .setTitle('مراحل العمرة ')
+          .setDescription('🔽 اختر أداة من القائمة لمعرفة المزيد عنها.');
+
+      // إعداد المينيو
+      const row = new ActionRowBuilder()
+          .addComponents(
+              new StringSelectMenuBuilder()
+                  .setCustomId('select_toooool')
+                  .setPlaceholder('🔽 اختر أداة من القائمة')
+                  .addOptions([
+                      { label: 'الإحرام', value: 'ihram', description: 'ما هو الإحرام؟' },
+              
+                      { label: 'الطواف', value: 'mina', description: 'ما هو الطواف ؟' },
+                      { label: 'السعى', value: 'Arafat', description: 'ما هو السعى ؟' },
+                      { label: 'تقصير الشعر', value: 'taq', description: 'ما هو تقصير الشعر ؟' },
+                  ])
+          );
+
+      await interaction.reply({ embeds: [embed], components: [row] });
+  }
+});
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isStringSelectMenu()) return;
+  
+  if (interaction.customId === 'select_toooool') {
+      let responseText = '';
+
+      switch (interaction.values[0]) {
+          case 'ihram':
+              responseText = '🕋 **الإحرام**: يلبس الرجل ثياب الإحرام، إزارا ورداءا ونعلين، أما المرأة فتلبس لباسها الشرعي المعتاد وتكشف عن وجهها ويديها وهي الحالة الطهرية الخاصة لأداء فريضة العمرة.';
+              break;
+       
+          case 'mina':
+              responseText = '⛺ **الطواف**: الدوران حول الكعبة الشريفة سبع مرات، يبدأ كل شوط من أمام الحجر الأسود وينتهي به.';
+              break;
+          case 'Arafat':
+              responseText = '🌄 **السعى**: السعي يبدأ من الصفا، ويختم من المروة ۷ مرات.';
+              break;
+              case 'taq':
+              responseText = '🌄 **تقصير الشعر**: يحلق شعر رأسه أو يقصره.';
+              break;
+          default:
+              responseText = '❌ اختيار غير صالح.';
+              break;
+      }
+
+      await interaction.reply({
+          content: responseText,
+          
+      });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'معلومات_إسلامية') {
+      try {
+          
+          const data = JSON.parse(fs.readFileSync('./info.json', 'utf8'));
+          
+      
+          const randomInfo = data[Math.floor(Math.random() * data.length)];
+
+ 
+          const embed = new EmbedBuilder()
+          .setColor('#0099ff')
+          .setTitle('📜 معلومة إسلامية')
+          .setDescription(randomInfo)
+          .setFooter({ text: 'شارك المعلومة مع أصدقائك 🌙' });
+
+  
+      await interaction.reply({ embeds: [embed] });
+      } catch (error) {
+          console.error(error);
+          await interaction.reply({ content: '❌ حدث خطأ أثناء جلب المعلومة!', ephemeral: true });
+      }
+  }
+});
+
+
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === 'مناسبات') {
+        const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId('event_select')
+            .setPlaceholder('اختر مناسبة')
+            .addOptions([
+                { label: 'عاشوراء', value: 'ashura' },
+                { label: 'المولد النبوي', value: 'moulid' },
+                { label: 'الإسراء والمعراج', value: 'isra_miraj' },
+                { label: 'ليلة النصف من شعبان', value: 'shaban' },
+                { label: 'عيد الفطر', value: 'eid_fitr' },
+                { label: 'عيد الأضحى', value: 'eid_al_adha' },
+                { label: 'شهر رمضان', value: 'ramadan' },
+            ]);
+
+        const row = new ActionRowBuilder().addComponents(selectMenu);
+
+        await interaction.reply({ content: 'اختر مناسبة من القائمة:', components: [row] });
+    }
+});
+
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isStringSelectMenu()) return;
+
+    if (interaction.customId === 'event_select') {
+        const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId('event_select')
+                .setPlaceholder('اختر مناسبة')
+                .addOptions([
+                    { label: 'عاشوراء', value: 'ashura' },
+                    { label: 'المولد النبوي', value: 'moulid' },
+                    { label: 'الإسراء والمعراج', value: 'isra_miraj' },
+                    { label: 'ليلة النصف من شعبان', value: 'shaban' },
+                    { label: 'عيد الفطر', value: 'eid_fitr' },
+                    { label: 'عيد الأضحى', value: 'eid_al_adha' },
+                    { label: 'شهر رمضان', value: 'ramadan' },
+                ])
+        );
+
+        let embed = new EmbedBuilder().setTitle('معلومات عن المناسبة');
+
+        switch (interaction.values[0]) {
+            case 'ashura':
+                embed.setDescription(`ويقع فى العاشر من شهر محرم وهناك التزامات اجتماعية واسرية تؤدى فى هذة المناسبة منها تقديم الخطيب لخطيبته هدية
+
+وكان وهناك نوع خاص من الحلوى يصنع فى هذه المناسبة هو " طبق عاشوراء" وهو يشبه طبق الارز بالبن ولكن يستخدم القمح بدلا من الارز.`);
+                break;
+            case 'moulid':
+                embed.setDescription(`هو يقع ليلة 12 ربيع اول ومن اهم العوامل المميزة لهذا الاحتفال هو ادخال البهجة على الاطفال وذلك عن طريق تقديم الهدايا للاطفال والتى يكون معظمها من الحلوى ومنها عروس المولد.
+`);
+                break;
+            case 'isra_miraj':
+                embed.setDescription(`يحتفل المسلمين بالإسراء والمعراج في ليلة السابع والعشرين من شهر رجب
+
+يُعرّف الإسراء بأنّه انتقال النبي عليه الصلاة والسلام مع جبريل عليه السلام ليلاً من البيت الحرام في مكّة المُكرمة إلى المسجد الأقصى في بيت المقدس على دابّةِ البُراق، وأمّا المعراج فهو صُعودهما من بيت المقدس إلى السماوات العُلى. وقد ثبت وقوع هذه الحادثة في القُرآن، والسُنّة، وشهادة الصحابة الكرام بذلك، وهي من إكرام الله تعالى لنبيّه.`);
+                break;
+            case 'shaban':
+                embed.setDescription(`يحتفل به فى ليلة 15 شعبان
+
+جاء عنه ﷺ أنه قال: هذه ليلة النصف من ‌شعبان إن الله عز وجل يطلع على عباده في ليلة النصف من ‌شعبان فيغفر للمستغفرين ويرحم المسترحمين ويؤخر أهل الحقد كما هم`);
+                break;
+            case 'eid_fitr':
+                embed.setDescription(`يبدأ الاستعداد للاحتفال بعيد الفطر ابتداء من الثلث الاخير من شهر رمضان وذلك بالبدء بعمل الكحك ، واعداد الفول السودانى والترمس والحلبة والمكسرات.
+
+ويبدأ الاحتفال بصلاة العيد ثم زيارة القبور وعادة زيارة القبور.`);
+                break;
+            case 'eid_al_adha':
+                embed.setDescription(`يحتفل المسلمون بعيد الأضحى بعد نهاية الحج إلى مكة مباشرة، ويكون ذلك في اليوم العاشر من شهر ذي الحجة بالتقويم الإسلامي القمري.
+
+يحتفل المسلمون في كل مكان بهذا العيد حتى وإن لم يؤدوا شعيرة الحج.`);
+                break;
+            case 'ramadan':
+                embed.setDescription(`شهر رمضان هو شهر هام في التقويم الإسلامي، حيث يعتبر شهر الخير، والتقوى، والإحسان. خلال الشهر، يصوم المسلمون عن الطعام والشراب خلال الفترة ما بين شروق الشمس وغروبها. صوم رمضان هو الركن الرابع من أركان الإسلام الخمسة.`);
+                break;
+        }
+
+        await interaction.update({ embeds: [embed], components: [row] });
+    }
+});
+
+
+
+
+
+
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+  
+    if (interaction.commandName === 'مساعدة') {
+      const selectMenu = new ActionRowBuilder()
+        .addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('select')
+            .setPlaceholder('اختر الأمر اللي عايز تعرف عنه معلومات')
+            .addOptions([
+              { label: 'الأوامر العامة', value: 'general' },
+              { label: 'أوامر معلومات إسلامية', value: 'islamic-info' },
+              { label: 'أوامر القرآن الكريم', value: 'quran' },
+              { label: 'أوامر مزيته الأذكار', value: 'dhikr' },
+              { label: 'أوامر مزيته الأدعية', value: 'duas' },
+              { label: 'أوامر الأذان', value: 'adhan' },
+              { label: 'أوامر العمرة والحج', value: 'hajj-umrah' },
+            ])
+        );
+  
+      const buttons = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setLabel('📩 دعوة البوت')
+            .setStyle(ButtonStyle.Link)
+            .setURL('https://discord.com/oauth2/authorize?client_id=1205287169263140916&permissions=8&integration_type=0&scope=bot'), 
+  
+          new ButtonBuilder()
+            .setLabel('🔗 سيرفر الدعم')
+            .setStyle(ButtonStyle.Link)
+            .setURL('https://discord.gg/7nXubfvVgc') 
+        );
+  
+      const embed = new EmbedBuilder()
+        .setColor(0x0099FF)
+        .setTitle('اختر الأمر اللي عايز تعرف عنه معلومات');
+  
+      await interaction.reply({ embeds: [embed], components: [selectMenu, buttons] });
+    }
+  });
+  
+  // Handling select menu interactions
+  client.on('interactionCreate', async interaction => {
+    if (!interaction.isStringSelectMenu()) return;
+  
+    if (interaction.customId === 'select') {
+      let selectedValue = interaction.values[0];
+  
+      let responseEmbed = new EmbedBuilder().setColor(0x00FF99);
+  
+      switch (selectedValue) {
+        case 'general':
+          responseEmbed.setTitle('الأوامر العامة')
+            .setDescription('لا يوجد اوامر عامه.');
+          break;
+        case 'islamic-info':
+          responseEmbed.setTitle('أوامر معلومات إسلامية')
+          .setDescription(`
+        **أوامر معلومات اسلامية**
+ /احاديث لقراءة الأحاديث
+
+ /السنن الرواتب لمعرفة سنن الرواتب
+
+ /سؤال لإرسال سؤال ديني والأجابة عليه
+
+ /مناسبات لمعرفة بعض المعلومات حول المناسبات في الدين اللإسلامي
+
+ /قصة لقراءة قصص اسلامية
+
+ /تحويل للهجري لتحويل الوقت من ميلادي لـ هجري
+
+ /معلومات اسلامية لقراءة معلومات اسلامية عامة
+
+ /رمضان لمعرفة كم باقي لرمضان
+            `);
+            
+          break;
+        case 'quran':
+          responseEmbed.setTitle('أوامر القرآن الكريم')
+            .setDescription(`**أوامر  القرآن الكريم**
+
+ /القرآن تشغيل لتشغيل القرآن الكريم في روم صوتي
+
+ /qruanpage  صفحات لقراءة القرآن الكريم
+
+ /مغادرة إيقاف قراءة القرآن الكريم
+
+`);
+          break;
+        case 'dhikr':
+          responseEmbed.setTitle('أوامر مزيته الأذكار')
+            .setDescription(`**أوامر ميزة الأذكار**
+الأوامر العامة
+
+ /عشوائيات أذكار  لإرسال أذكار عشوائية
+
+
+الأوامر الأدارية
+
+ /اذكار القناة لتحديد روم الأذكار
+
+ /اذكار ازاله لازاله روم الأذكار
+
+ /اذكار الوقت لتغيير وقت إرسال الأذكار
+
+`);
+          break;
+        case 'duas':
+          responseEmbed.setTitle('أوامر مزيته الأدعية')
+            .setDescription(`**الأوامر العامة**
+
+ /عشوائيات أدعية  لإرسال أدعية عشوائية
+
+
+
+الأوامر الأدارية
+
+ /ادعية القناة لتحديد روم الأدعية
+
+ /ادعية ازاله لازاله روم الأدعية
+
+ /ادعية الوقت لتغيير وقت إرسال الأدعية
+
+`);
+          break;
+        case 'adhan':
+          responseEmbed.setTitle('أوامر الأذان')
+            .setDescription(`**الأوامر العامة**
+
+ /اذان معرفة وقت الأذان لمدينة أو منطقة محددة`);
+          break;
+        case 'hajj-umrah':
+          responseEmbed.setTitle('أوامر العمرة والحج')
+            .setDescription(`**الأوامر العامة**
+
+ /عمرة ادوات لمعرفة ادوات العمرة
+
+ /عمرة مراحل لمعرفة مراحل العمرة
+
+
+ /الحج ادوات لمعرفة ادوات الحج
+
+ /الحج مراحل لمعرفة مراحل الحج
+`);
+          break;
+        default:
+          responseEmbed.setTitle('خطأ')
+            .setDescription('لم يتم العثور على معلومات لهذا الأمر.');
+          break;
+      }
+  
+      await interaction.update({ embeds: [responseEmbed] });
+    }
+  });
+
+
+
+  
+
+client.login(process.env.DISCORD_TOKEN);
